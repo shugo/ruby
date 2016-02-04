@@ -2079,6 +2079,7 @@ vm_call_method_each_type(rb_thread_t *th, rb_control_frame_t *cfp, struct rb_cal
 	  VALUE refinements = cref ? CREF_REFINEMENTS(cref) : Qnil;
 	  VALUE refinement;
 	  const rb_callable_method_entry_t *ref_me;
+	  struct rb_call_cache new_cc;
 
 	  refinement = find_refinement(refinements, cc->me->owner);
 
@@ -2095,9 +2096,10 @@ vm_call_method_each_type(rb_thread_t *th, rb_control_frame_t *cfp, struct rb_cal
 		      goto no_refinement_dispatch;
 		  }
 	      }
-	      cc->me = ref_me;
+	      new_cc = *cc;
+	      new_cc.me = ref_me;
 	      if (ref_me->def->type != VM_METHOD_TYPE_REFINED) {
-		  return vm_call_method(th, cfp, calling, ci, cc);
+		  return vm_call_method(th, cfp, calling, ci, &new_cc);
 	      }
 	  }
 	  else {
