@@ -1575,12 +1575,16 @@ rb_eval_cmd(VALUE cmd, VALUE arg, int level)
 
 /* block eval under the class/module context */
 
+void rb_using_module(const rb_cref_t *cref, VALUE module);
+
 static VALUE
-yield_under(VALUE under, VALUE self, int argc, const VALUE *argv)
+yield_under(VALUE under, VALUE self, int argc, const VALUE *argv,
+	    VALUE refinements)
 {
     rb_thread_t *th = GET_THREAD();
     rb_block_t block, *blockptr;
     rb_cref_t *cref;
+    long i;
 
     if ((blockptr = VM_CF_BLOCK_PTR(th->cfp)) != 0) {
 	block = *blockptr;
@@ -1588,6 +1592,25 @@ yield_under(VALUE under, VALUE self, int argc, const VALUE *argv)
 	VM_CF_LEP(th->cfp)[0] = VM_ENVVAL_BLOCK_PTR(&block);
     }
     cref = vm_cref_push(th, under, blockptr, TRUE);
+    /* TODO: fixes for inline method cache */
+    if (!NIL_P(refinements)) {
+	switch (TYPE(refinements)) {
+	  case T_MODULE:
+	      rb_using_module(cref, refinements);
+	    break;
+	  case T_ARRAY:
+	    for (i = 0; i < RARRAY_LEN(refinements); i++) {
+		VALUE ref = RARRAY_AREF(refinements, i);
+		Check_Type(ref, T_MODULE);
+		rb_using_module(cref, refinements);
+	    }
+	    break;
+	  default:
+	    rb_raise(rb_eTypeError, "wrong type %s for the using: option",
+		     rb_obj_classname(refinements));
+
+	}
+    }
 
     return vm_yield_with_cref(th, argc, argv, cref);
 }
@@ -1623,8 +1646,13 @@ static VALUE
 specific_eval(int argc, const VALUE *argv, VALUE klass, VALUE self)
 {
     if (rb_block_given_p()) {
-	rb_check_arity(argc, 0, 0);
-	return yield_under(klass, self, 1, &self);
+	VALUE opt, refinements = Qnil;
+
+	rb_scan_args(argc, argv, "00:", &opt);
+	if (!NIL_P(opt)) {
+	    refinements = rb_hash_aref(opt, ID2SYM(rb_intern("using")));
+	}
+	return yield_under(klass, self, 1, &self, refinements);
     }
     else {
 	VALUE file = Qundef;
@@ -1720,7 +1748,7 @@ VALUE
 rb_obj_instance_exec(int argc, const VALUE *argv, VALUE self)
 {
     VALUE klass = singleton_class_for_eval(self);
-    return yield_under(klass, self, argc, argv);
+    return yield_under(klass, self, argc, argv, Qnil);
 }
 
 /*
@@ -1781,7 +1809,7 @@ rb_mod_module_eval(int argc, const VALUE *argv, VALUE mod)
 VALUE
 rb_mod_module_exec(int argc, const VALUE *argv, VALUE mod)
 {
-    return yield_under(mod, mod, argc, argv);
+    return yield_under(mod, mod, argc, argv, Qnil);
 }
 
 /*
