@@ -1592,7 +1592,6 @@ yield_under(VALUE under, VALUE self, int argc, const VALUE *argv,
 	VM_CF_LEP(th->cfp)[0] = VM_ENVVAL_BLOCK_PTR(&block);
     }
     cref = vm_cref_push(th, under, blockptr, TRUE);
-    /* TODO: fixes for inline method cache */
     if (!NIL_P(refinements)) {
 	switch (TYPE(refinements)) {
 	  case T_MODULE:
