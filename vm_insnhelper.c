@@ -2029,11 +2029,6 @@ find_refinement(VALUE refinements, VALUE klass)
     if (NIL_P(refinements)) {
 	return Qnil;
     }
-#if 0
-    if (RB_TYPE_P(klass, T_ICLASS)) {
-	klass = RBASIC(klass)->klass;
-    }
-#endif
     return rb_hash_lookup(refinements, klass);
 }
 

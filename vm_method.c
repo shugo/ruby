@@ -398,7 +398,7 @@ rb_method_entry_create(ID called_id, VALUE klass, rb_method_visibility_t visi, c
     return me;
 }
 
-const rb_method_entry_t *
+rb_method_entry_t *
 rb_method_entry_clone(const rb_method_entry_t *src_me)
 {
     rb_method_entry_t *me = rb_method_entry_alloc(src_me->called_id, src_me->owner, src_me->defined_class,
@@ -439,13 +439,16 @@ make_method_entry_refined(VALUE owner, rb_method_entry_t *me)
     }
     else {
 	struct {
-	    const struct rb_method_entry_struct *orig_me;
+	    struct rb_method_entry_struct *orig_me;
 	    VALUE owner;
 	} refined;
 
 	rb_vm_check_redefinition_opt_method(me, me->owner);
 
 	refined.orig_me = rb_method_entry_clone(me);
+	if (refined.orig_me->defined_class == 0) {
+	    refined.orig_me->defined_class = owner;
+	}
 	refined.owner = owner;
 
 	method_definition_set(me, method_definition_create(VM_METHOD_TYPE_REFINED, me->called_id), (void *)&refined);

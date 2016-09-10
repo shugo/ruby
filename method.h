@@ -49,7 +49,7 @@ typedef struct rb_cref_struct {
 
 typedef struct rb_method_entry_struct {
     VALUE flags;
-    const VALUE defined_class;
+    VALUE defined_class;
     struct rb_method_definition_struct * const def;
     ID called_id;
     const VALUE owner;
@@ -204,7 +204,7 @@ VALUE rb_obj_method_location(VALUE obj, ID id);
 void rb_free_method_entry(const rb_method_entry_t *me);
 void rb_sweep_method_entry(void *vm);
 
-const rb_method_entry_t *rb_method_entry_clone(const rb_method_entry_t *me);
+rb_method_entry_t *rb_method_entry_clone(const rb_method_entry_t *me);
 const rb_callable_method_entry_t *rb_method_entry_complement_defined_class(const rb_method_entry_t *src_me, VALUE defined_class);
 void rb_method_entry_copy(rb_method_entry_t *dst, const rb_method_entry_t *src);
 
