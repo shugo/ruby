@@ -219,6 +219,39 @@ class FTPTest < Test::Unit::TestCase
     end
   end
 
+  def test_implicit_login
+    commands = []
+    server = create_ftp_server { |sock|
+      sock.print("220 (test_ftp).\r\n")
+      commands.push(sock.gets)
+      sock.print("331 Please specify the password.\r\n")
+      commands.push(sock.gets)
+      sock.print("332 Need account for login.\r\n")
+      commands.push(sock.gets)
+      sock.print("230 Login successful.\r\n")
+      commands.push(sock.gets)
+      sock.print("200 Switching to Binary mode.\r\n")
+    }
+    begin
+      begin
+        ftp = Net::FTP.new(SERVER_ADDR,
+                           port: server.port,
+                           user: "foo",
+                           passwd: "bar",
+                           acct: "baz")
+        assert_equal("USER foo\r\n", commands.shift)
+        assert_equal("PASS bar\r\n", commands.shift)
+        assert_equal("ACCT baz\r\n", commands.shift)
+        assert_equal("TYPE I\r\n", commands.shift)
+        assert_equal(nil, commands.shift)
+      ensure
+        ftp.close if ftp
+      end
+    ensure
+      server.close
+    end
+  end
+
   # TODO: How can we test open_timeout?  sleep before accept cannot delay
   # connections.
   def _test_open_timeout_exceeded

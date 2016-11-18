@@ -19,6 +19,10 @@ require "socket"
 require "monitor"
 require "net/protocol"
 require "time"
+begin
+  require "openssl"
+rescue LoadError
+end
 
 module Net
 
@@ -75,6 +79,10 @@ module Net
   #
   class FTP
     include MonitorMixin
+    if defined?(OpenSSL::SSL)
+      include OpenSSL
+      include SSL
+    end
 
     # :stopdoc:
     FTP_PORT = 21
@@ -161,20 +169,61 @@ module Net
     # is made. Additionally, if the +user+ is given, the given user name,
     # password, and (optionally) account are used to log in.  See #login.
     #
-    def initialize(host = nil, user = nil, passwd = nil, acct = nil)
+    def initialize(host = nil, user_or_options = {}, passwd = nil, acct = nil)
       super()
+      begin
+        options = user_or_options.to_hash
+      rescue NoMethodError
+        # for backward compatibility
+        options = {}
+        options[:user] = user_or_options
+        options[:passwd] = passwd
+        options[:acct] = acct
+      end
+      @host = nil
+      if options[:ssl]
+        unless defined?(OpenSSL::SSL)
+          raise "SSL extension not installed"
+        end
+        ssl_params = options[:ssl] == true ? {} : options[:ssl]
+        @ssl_context = SSLContext.new
+        @ssl_context.set_params(ssl_params)
+        if defined?(VerifyCallbackProc)
+          @ssl_context.verify_callback = VerifyCallbackProc
+        end
+        @ssl_session = nil
+        if options[:private_data_connection].nil?
+          @private_data_connection = true
+        else
+          @private_data_connection = options[:private_data_connection]
+        end
+      else
+        @ssl_context = nil
+        if options[:private_data_connection]
+          raise ArgumentError,
+            "private_data_connection can be set to true only when ssl is enabled"
+        end
+      end
       @binary = true
-      @passive = @@default_passive
-      @debug_mode = false
+      if options[:passive].nil?
+        @passive = @@default_passive
+      else
+        @passive = options[:passive]
+      end
+      if options[:debug_mode].nil?
+        @debug_mode = false
+      else
+        @debug_mode = options[:debug_mode]
+      end
       @resume = false
-      @sock = NullSocket.new
+      @bare_sock = @sock = NullSocket.new
       @logged_in = false
       @open_timeout = nil
       @read_timeout = 60
       if host
-        connect(host)
-        if user
-          login(user, passwd, acct)
+        connect(host, options[:port] || FTP_PORT)
+        if options[:user]
+          login(options[:user], options[:passwd], options[:acct])
         end
       end
     end
@@ -242,10 +291,26 @@ module Net
         else
           sock = TCPSocket.open(host, port)
         end
-        BufferedSocket.new(sock, read_timeout: @read_timeout)
       }
     end
     private :open_socket
+
+    def start_tls_session(sock)
+      ssl_sock = SSLSocket.new(sock, @ssl_context)
+      ssl_sock.sync_close = true
+      ssl_sock.hostname = @host if ssl_sock.respond_to? :hostname=
+      if @ssl_session &&
+          Process.clock_gettime(Process::CLOCK_REALTIME) < @ssl_session.time.to_f + @ssl_session.timeout
+        ssl_sock.session = @ssl_session
+      end
+      ssl_sock.connect
+      if @ssl_context.verify_mode != VERIFY_NONE
+        ssl_sock.post_connection_check(@host)
+      end
+      @ssl_session = ssl_sock.session
+      return ssl_sock
+    end
+    private :start_tls_session
 
     #
     # Establishes an FTP connection to host, optionally overriding the default
@@ -258,8 +323,19 @@ module Net
         print "connect: ", host, ", ", port, "\n"
       end
       synchronize do
-        @sock = open_socket(host, port)
+        @host = host
+        @bare_sock = open_socket(host, port)
+        @sock = BufferedSocket.new(@bare_sock, read_timeout: @read_timeout)
         voidresp
+        if @ssl_context
+          voidcmd("AUTH TLS")
+          ssl_sock = start_tls_session(@bare_sock)
+          @sock = BufferedSocket.new(ssl_sock, read_timeout: @read_timeout)
+          if @private_data_connection
+            voidcmd("PBSZ 0")
+            voidcmd("PROT P")
+          end
+        end
       end
     end
 
@@ -381,7 +457,7 @@ module Net
 
     # Constructs and send the appropriate PORT (or EPRT) command
     def sendport(host, port) # :nodoc:
-      remote_address = @sock.remote_address
+      remote_address = @bare_sock.remote_address
       if remote_address.ipv4?
         cmd = "PORT " + (host.split(".") + port.divmod(256)).join(",")
       elsif remote_address.ipv6?
@@ -395,13 +471,13 @@ module Net
 
     # Constructs a TCPServer socket
     def makeport # :nodoc:
-      TCPServer.open(@sock.local_address.ip_address, 0)
+      TCPServer.open(@bare_sock.local_address.ip_address, 0)
     end
     private :makeport
 
     # sends the appropriate command to enable a passive connection
     def makepasv # :nodoc:
-      if @sock.remote_address.ipv4?
+      if @bare_sock.remote_address.ipv4?
         host, port = parse227(sendcmd("PASV"))
       else
         host, port = parse229(sendcmd("EPSV"))
@@ -445,14 +521,17 @@ module Net
           if !resp.start_with?("1")
             raise FTPReplyError, resp
           end
-          conn = BufferedSocket.new(sock.accept, read_timeout: @read_timeout)
+          conn = sock.accept
           sock.shutdown(Socket::SHUT_WR) rescue nil
           sock.read rescue nil
         ensure
           sock.close
         end
       end
-      return conn
+      if @private_data_connection
+        conn = start_tls_session(conn)
+      end
+      return BufferedSocket.new(conn, read_timeout: @read_timeout)
     end
     private :transfercmd
 
@@ -505,9 +584,9 @@ module Net
               break if data == nil
               yield(data)
             end
-            conn.shutdown(Socket::SHUT_WR)
-            conn.read_timeout = 1
-            conn.read
+#            conn.shutdown(Socket::SHUT_WR)
+#            conn.read_timeout = 1
+#            conn.read
           ensure
             conn.close if conn
           end
@@ -532,9 +611,9 @@ module Net
               break if line == nil
               yield(line.sub(/\r?\n\z/, ""), !line.match(/\n\z/).nil?)
             end
-            conn.shutdown(Socket::SHUT_WR)
-            conn.read_timeout = 1
-            conn.read
+#            conn.shutdown(Socket::SHUT_WR)
+#            conn.read_timeout = 1
+#            conn.read
           ensure
             conn.close if conn
           end
