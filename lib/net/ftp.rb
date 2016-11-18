@@ -301,6 +301,7 @@ module Net
       ssl_sock.hostname = @host if ssl_sock.respond_to? :hostname=
       if @ssl_session &&
           Process.clock_gettime(Process::CLOCK_REALTIME) < @ssl_session.time.to_f + @ssl_session.timeout
+        # ProFTPD returns 425 for data connections if session is not reused.
         ssl_sock.session = @ssl_session
       end
       ssl_sock.connect
@@ -1247,7 +1248,7 @@ module Net
     def close
       if @sock and not @sock.closed?
         begin
-          @sock.shutdown(Socket::SHUT_WR) rescue nil
+          @bare_sock.shutdown(Socket::SHUT_WR) rescue nil
           orig, self.read_timeout = self.read_timeout, 3
           @sock.read rescue nil
         ensure
