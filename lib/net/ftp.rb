@@ -244,7 +244,13 @@ module Net
       @open_timeout = nil
       @read_timeout = 60
       if host
-        connect(host, options[:port] || FTP_PORT)
+        if options[:port]
+          connect(host, options[:port] || FTP_PORT)
+        else
+          # spec/rubyspec/library/net/ftp/initialize_spec.rb depends on
+          # the number of arguments passed to connect....
+          connect(host)
+        end
         if options[:user]
           login(options[:user], options[:passwd], options[:acct])
         end
