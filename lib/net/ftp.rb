@@ -164,10 +164,33 @@ module Net
       end
     end
 
+    # :call-seq:
+    #    Net::FTP.new(host = nil, options = {})
     #
     # Creates and returns a new +FTP+ object. If a +host+ is given, a connection
-    # is made. Additionally, if the +user+ is given, the given user name,
-    # password, and (optionally) account are used to log in.  See #login.
+    # is made.
+    #
+    # +options+ is an option hash, each key of which is a symbol.
+    #
+    # The available options are:
+    #
+    # port::    Port number (default value is 21)
+    # ssl::     If options[:ssl] is true, then an attempt will be made
+    #           to use SSL (now TLS) to connect to the server.  For this to
+    #           work OpenSSL [OSSL] and the Ruby OpenSSL [RSSL] extensions
+    #           need to be installed.  If options[:ssl] is a hash, it's
+    #           passed to OpenSSL::SSL::SSLContext#set_params as parameters.
+    # private_data_connection::  If true, TLS is used for data connections.
+    #                            Default: +true+ when options[:ssl] is true.
+    # user::    Username for login.  If options[:user] is the string
+    #           "anonymous" and the options[:password] is +nil+,
+    #           "anonymous@" is used as a password.  If options[:user] is
+    #           +nil+, 
+    # passwd::  Password for login.
+    # acct::    Account information for ACCT.
+    # passive:: When +true+, the connection is in passive mode. Default: +true+.
+    # debug_mode::  When +true+, all traffic to and from the server is
+    #               written to +$stdout+.  Default: +false+.
     #
     def initialize(host = nil, user_or_options = {}, passwd = nil, acct = nil)
       super()
