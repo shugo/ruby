@@ -151,16 +151,16 @@ module Net
     # If a block is given, it is passed the +FTP+ object, which will be closed
     # when the block finishes, or when an exception is raised.
     #
-    def FTP.open(host, user = nil, passwd = nil, acct = nil)
+    def FTP.open(host, *args)
       if block_given?
-        ftp = new(host, user, passwd, acct)
+        ftp = new(host, *args)
         begin
           yield ftp
         ensure
           ftp.close
         end
       else
-        new(host, user, passwd, acct)
+        new(host, *args)
       end
     end
 
@@ -329,12 +329,17 @@ module Net
         @sock = BufferedSocket.new(@bare_sock, read_timeout: @read_timeout)
         voidresp
         if @ssl_context
-          voidcmd("AUTH TLS")
-          ssl_sock = start_tls_session(@bare_sock)
-          @sock = BufferedSocket.new(ssl_sock, read_timeout: @read_timeout)
-          if @private_data_connection
-            voidcmd("PBSZ 0")
-            voidcmd("PROT P")
+          begin
+            voidcmd("AUTH TLS")
+            ssl_sock = start_tls_session(@bare_sock)
+            @sock = BufferedSocket.new(ssl_sock, read_timeout: @read_timeout)
+            if @private_data_connection
+              voidcmd("PBSZ 0")
+              voidcmd("PROT P")
+            end
+          rescue OpenSSL::SSL::SSLError
+            close
+            raise
           end
         end
       end

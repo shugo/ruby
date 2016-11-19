@@ -8,6 +8,9 @@ require "tempfile"
 
 class FTPTest < Test::Unit::TestCase
   SERVER_ADDR = "127.0.0.1"
+  CA_FILE = File.expand_path("../imap/cacert.pem", __dir__)
+  SERVER_KEY = File.expand_path("../imap/server.key", __dir__)
+  SERVER_CERT = File.expand_path("../imap/server.crt", __dir__)
 
   def setup
     @thread = nil
@@ -247,6 +250,29 @@ class FTPTest < Test::Unit::TestCase
       ensure
         ftp.close if ftp
       end
+    ensure
+      server.close
+    end
+  end
+
+  def test_s_open
+    commands = []
+    server = create_ftp_server { |sock|
+      sock.print("220 (test_ftp).\r\n")
+      commands.push(sock.gets)
+      sock.print("331 Please specify the password.\r\n")
+      commands.push(sock.gets)
+      sock.print("230 Login successful.\r\n")
+      commands.push(sock.gets)
+      sock.print("200 Switching to Binary mode.\r\n")
+    }
+    begin
+      Net::FTP.open(SERVER_ADDR, port: server.port, user: "anonymous") do
+      end
+      assert_equal("USER anonymous\r\n", commands.shift)
+      assert_equal("PASS anonymous@\r\n", commands.shift)
+      assert_equal("TYPE I\r\n", commands.shift)
+      assert_equal(nil, commands.shift)
     ensure
       server.close
     end
@@ -1677,6 +1703,58 @@ EOF
     end
   end
 
+  if defined?(OpenSSL::SSL)
+    def test_tls_unknown_ca
+      assert_raise(OpenSSL::SSL::SSLError) do
+        tls_test do |port|
+          begin
+            Net::FTP.new("localhost",
+                         :port => port,
+                         :ssl => true)
+          rescue SystemCallError
+            skip $!
+          end
+        end
+      end
+    end
+
+    def test_tls_with_ca_file
+      assert_nothing_raised do
+        tls_test do |port|
+          begin
+            Net::FTP.new("localhost",
+                         :port => port,
+                         :ssl => { :ca_file => CA_FILE })
+          rescue SystemCallError
+            skip $!
+          end
+        end
+      end
+    end
+
+    def test_tls_verify_none
+      assert_nothing_raised do
+        tls_test do |port|
+          Net::FTP.new(SERVER_ADDR,
+                       :port => port,
+                       :ssl => { :verify_mode => OpenSSL::SSL::VERIFY_NONE })
+        end
+      end
+    end
+
+    def test_tls_post_connection_check
+      assert_raise(OpenSSL::SSL::SSLError) do
+        tls_test do |port|
+          # SERVER_ADDR is different from the hostname in the certificate,
+          # so the following code should raise a SSLError.
+          Net::FTP.new(SERVER_ADDR,
+                       :port => port,
+                       :ssl => { :ca_file => CA_FILE })
+        end
+      end
+    end
+  end
+
   private
 
   def create_ftp_server(sleep_time = nil)
@@ -1699,5 +1777,46 @@ EOF
       addr[1]
     end
     return server
+  end
+
+  def tls_test
+    server = TCPServer.new(SERVER_ADDR, 0)
+    port = server.addr[1]
+    commands = []
+    @thread = Thread.start do
+      sock = server.accept
+      begin
+        sock.print("220 (test_ftp).\r\n")
+        commands.push(sock.gets)
+        sock.print("234 AUTH success.\r\n")
+        ctx = OpenSSL::SSL::SSLContext.new
+        ctx.ca_file = CA_FILE
+        ctx.key = File.open(SERVER_KEY) { |f|
+          OpenSSL::PKey::RSA.new(f)
+        }
+        ctx.cert = File.open(SERVER_CERT) { |f|
+          OpenSSL::X509::Certificate.new(f)
+        }
+        sock = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+        sock.sync_close = true
+        begin
+          sock.accept
+          commands.push(sock.gets)
+          sock.print("200 PSBZ success.\r\n")
+          commands.push(sock.gets)
+          sock.print("200 PROT success.\r\n")
+        rescue OpenSSL::SSL::SSLError
+        end
+      ensure
+        sock.close
+        server.close
+      end
+    end
+    ftp = yield(port)
+    ftp.close
+
+    assert_equal("AUTH TLS\r\n", commands.shift)
+    assert_equal("PBSZ 0\r\n", commands.shift)
+    assert_equal("PROT P\r\n", commands.shift)
   end
 end
