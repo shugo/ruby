@@ -590,6 +590,9 @@ module Net
               break if data == nil
               yield(data)
             end
+            conn.shutdown(Socket::SHUT_WR)
+            conn.read_timeout = 1
+            conn.read
           ensure
             conn.close if conn
           end
@@ -614,6 +617,9 @@ module Net
               break if line == nil
               yield(line.sub(/\r?\n\z/, ""), !line.match(/\n\z/).nil?)
             end
+            conn.shutdown(Socket::SHUT_WR)
+            conn.read_timeout = 1
+            conn.read
           ensure
             conn.close if conn
           end
@@ -1363,10 +1369,14 @@ module Net
     end
 
     class BufferedSocket < BufferedIO
-      [:local_address, :remote_address, :addr, :peeraddr, :send, :shutdown].each do |method|
+      [:local_address, :remote_address, :addr, :peeraddr, :send].each do |method|
         define_method(method) { |*args|
           @io.__send__(method, *args)
         }
+      end
+
+      def shutdown(*args)
+        @io.to_io.shutdown(*args)
       end
 
       def read(len = nil)
