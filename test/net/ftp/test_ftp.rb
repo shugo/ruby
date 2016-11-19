@@ -1753,6 +1753,310 @@ EOF
         end
       end
     end
+
+    def test_active_private_data_connection
+      server = TCPServer.new(SERVER_ADDR, 0)
+      port = server.addr[1]
+      commands = []
+      binary_data = (0..0xff).map {|i| i.chr}.join * 4 * 3
+      @thread = Thread.start do
+        sock = server.accept
+        begin
+          sock.print("220 (test_ftp).\r\n")
+          commands.push(sock.gets)
+          sock.print("234 AUTH success.\r\n")
+          ctx = OpenSSL::SSL::SSLContext.new
+          ctx.ca_file = CA_FILE
+          ctx.key = File.open(SERVER_KEY) { |f|
+            OpenSSL::PKey::RSA.new(f)
+          }
+          ctx.cert = File.open(SERVER_CERT) { |f|
+            OpenSSL::X509::Certificate.new(f)
+          }
+          sock = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+          sock.sync_close = true
+          begin
+            sock.accept
+            commands.push(sock.gets)
+            sock.print("200 PSBZ success.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 PROT success.\r\n")
+            commands.push(sock.gets)
+            sock.print("331 Please specify the password.\r\n")
+            commands.push(sock.gets)
+            sock.print("230 Login successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 Switching to Binary mode.\r\n")
+            line = sock.gets
+            commands.push(line)
+            port_args = line.slice(/\APORT (.*)/, 1).split(/,/)
+            host = port_args[0, 4].join(".")
+            port = port_args[4, 2].map(&:to_i).inject {|x, y| (x << 8) + y}
+            sock.print("200 PORT command successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("150 Opening BINARY mode data connection for foo (#{binary_data.size} bytes)\r\n")
+            conn = TCPSocket.new(host, port)
+            conn = OpenSSL::SSL::SSLSocket.new(conn, ctx)
+            conn.sync_close = true
+            conn.accept
+            binary_data.scan(/.{1,1024}/nm) do |s|
+              conn.print(s)
+            end
+            conn.close
+            sock.print("226 Transfer complete.\r\n")
+          rescue OpenSSL::SSL::SSLError
+          end
+        ensure
+          sock.close
+          server.close
+        end
+      end
+      ftp = Net::FTP.new("localhost",
+                         port: port,
+                         ssl: { ca_file: CA_FILE },
+                         passive: false)
+      begin
+        assert_equal("AUTH TLS\r\n", commands.shift)
+        assert_equal("PBSZ 0\r\n", commands.shift)
+        assert_equal("PROT P\r\n", commands.shift)
+        ftp.login
+        assert_match(/\AUSER /, commands.shift)
+        assert_match(/\APASS /, commands.shift)
+        assert_equal("TYPE I\r\n", commands.shift)
+        buf = ftp.getbinaryfile("foo", nil)
+        assert_equal(binary_data, buf)
+        assert_equal(Encoding::ASCII_8BIT, buf.encoding)
+        assert_match(/\APORT /, commands.shift)
+        assert_equal("RETR foo\r\n", commands.shift)
+        assert_equal(nil, commands.shift)
+      ensure
+        ftp.close
+      end
+    end
+
+    def test_passive_private_data_connection
+      server = TCPServer.new(SERVER_ADDR, 0)
+      port = server.addr[1]
+      commands = []
+      binary_data = (0..0xff).map {|i| i.chr}.join * 4 * 3
+      @thread = Thread.start do
+        sock = server.accept
+        begin
+          sock.print("220 (test_ftp).\r\n")
+          commands.push(sock.gets)
+          sock.print("234 AUTH success.\r\n")
+          ctx = OpenSSL::SSL::SSLContext.new
+          ctx.ca_file = CA_FILE
+          ctx.key = File.open(SERVER_KEY) { |f|
+            OpenSSL::PKey::RSA.new(f)
+          }
+          ctx.cert = File.open(SERVER_CERT) { |f|
+            OpenSSL::X509::Certificate.new(f)
+          }
+          sock = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+          sock.sync_close = true
+          begin
+            sock.accept
+            commands.push(sock.gets)
+            sock.print("200 PSBZ success.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 PROT success.\r\n")
+            commands.push(sock.gets)
+            sock.print("331 Please specify the password.\r\n")
+            commands.push(sock.gets)
+            sock.print("230 Login successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 Switching to Binary mode.\r\n")
+            commands.push(sock.gets)
+            data_server = TCPServer.new(SERVER_ADDR, 0)
+            port = data_server.local_address.ip_port
+            sock.printf("227 Entering Passive Mode (127,0,0,1,%s).\r\n",
+                        port.divmod(256).join(","))
+            commands.push(sock.gets)
+            sock.print("150 Opening BINARY mode data connection for foo (#{binary_data.size} bytes)\r\n")
+            conn = data_server.accept
+            conn = OpenSSL::SSL::SSLSocket.new(conn, ctx)
+            conn.sync_close = true
+            conn.accept
+            binary_data.scan(/.{1,1024}/nm) do |s|
+              conn.print(s)
+            end
+            conn.close
+            data_server.close
+            sock.print("226 Transfer complete.\r\n")
+          rescue OpenSSL::SSL::SSLError
+          end
+        ensure
+          sock.close
+          server.close
+        end
+      end
+      ftp = Net::FTP.new("localhost",
+                         port: port,
+                         ssl: { ca_file: CA_FILE },
+                         passive: true)
+      begin
+        assert_equal("AUTH TLS\r\n", commands.shift)
+        assert_equal("PBSZ 0\r\n", commands.shift)
+        assert_equal("PROT P\r\n", commands.shift)
+        ftp.login
+        assert_match(/\AUSER /, commands.shift)
+        assert_match(/\APASS /, commands.shift)
+        assert_equal("TYPE I\r\n", commands.shift)
+        buf = ftp.getbinaryfile("foo", nil)
+        assert_equal(binary_data, buf)
+        assert_equal(Encoding::ASCII_8BIT, buf.encoding)
+        assert_equal("PASV\r\n", commands.shift)
+        assert_equal("RETR foo\r\n", commands.shift)
+        assert_equal(nil, commands.shift)
+      ensure
+        ftp.close
+      end
+    end
+
+    def test_active_clear_data_connection
+      server = TCPServer.new(SERVER_ADDR, 0)
+      port = server.addr[1]
+      commands = []
+      binary_data = (0..0xff).map {|i| i.chr}.join * 4 * 3
+      @thread = Thread.start do
+        sock = server.accept
+        begin
+          sock.print("220 (test_ftp).\r\n")
+          commands.push(sock.gets)
+          sock.print("234 AUTH success.\r\n")
+          ctx = OpenSSL::SSL::SSLContext.new
+          ctx.ca_file = CA_FILE
+          ctx.key = File.open(SERVER_KEY) { |f|
+            OpenSSL::PKey::RSA.new(f)
+          }
+          ctx.cert = File.open(SERVER_CERT) { |f|
+            OpenSSL::X509::Certificate.new(f)
+          }
+          sock = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+          sock.sync_close = true
+          begin
+            sock.accept
+            commands.push(sock.gets)
+            sock.print("331 Please specify the password.\r\n")
+            commands.push(sock.gets)
+            sock.print("230 Login successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 Switching to Binary mode.\r\n")
+            line = sock.gets
+            commands.push(line)
+            port_args = line.slice(/\APORT (.*)/, 1).split(/,/)
+            host = port_args[0, 4].join(".")
+            port = port_args[4, 2].map(&:to_i).inject {|x, y| (x << 8) + y}
+            sock.print("200 PORT command successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("150 Opening BINARY mode data connection for foo (#{binary_data.size} bytes)\r\n")
+            conn = TCPSocket.new(host, port)
+            binary_data.scan(/.{1,1024}/nm) do |s|
+              conn.print(s)
+            end
+            conn.close
+            sock.print("226 Transfer complete.\r\n")
+          rescue OpenSSL::SSL::SSLError
+          end
+        ensure
+          sock.close
+          server.close
+        end
+      end
+      ftp = Net::FTP.new("localhost",
+                         port: port,
+                         ssl: { ca_file: CA_FILE },
+                         private_data_connection: false,
+                         passive: false)
+      begin
+        assert_equal("AUTH TLS\r\n", commands.shift)
+        ftp.login
+        assert_match(/\AUSER /, commands.shift)
+        assert_match(/\APASS /, commands.shift)
+        assert_equal("TYPE I\r\n", commands.shift)
+        buf = ftp.getbinaryfile("foo", nil)
+        assert_equal(binary_data, buf)
+        assert_equal(Encoding::ASCII_8BIT, buf.encoding)
+        assert_match(/\APORT /, commands.shift)
+        assert_equal("RETR foo\r\n", commands.shift)
+        assert_equal(nil, commands.shift)
+      ensure
+        ftp.close
+      end
+    end
+
+    def test_passive_clear_data_connection
+      server = TCPServer.new(SERVER_ADDR, 0)
+      port = server.addr[1]
+      commands = []
+      binary_data = (0..0xff).map {|i| i.chr}.join * 4 * 3
+      @thread = Thread.start do
+        sock = server.accept
+        begin
+          sock.print("220 (test_ftp).\r\n")
+          commands.push(sock.gets)
+          sock.print("234 AUTH success.\r\n")
+          ctx = OpenSSL::SSL::SSLContext.new
+          ctx.ca_file = CA_FILE
+          ctx.key = File.open(SERVER_KEY) { |f|
+            OpenSSL::PKey::RSA.new(f)
+          }
+          ctx.cert = File.open(SERVER_CERT) { |f|
+            OpenSSL::X509::Certificate.new(f)
+          }
+          sock = OpenSSL::SSL::SSLSocket.new(sock, ctx)
+          sock.sync_close = true
+          begin
+            sock.accept
+            commands.push(sock.gets)
+            sock.print("331 Please specify the password.\r\n")
+            commands.push(sock.gets)
+            sock.print("230 Login successful.\r\n")
+            commands.push(sock.gets)
+            sock.print("200 Switching to Binary mode.\r\n")
+            commands.push(sock.gets)
+            data_server = TCPServer.new(SERVER_ADDR, 0)
+            port = data_server.local_address.ip_port
+            sock.printf("227 Entering Passive Mode (127,0,0,1,%s).\r\n",
+                        port.divmod(256).join(","))
+            commands.push(sock.gets)
+            sock.print("150 Opening BINARY mode data connection for foo (#{binary_data.size} bytes)\r\n")
+            conn = data_server.accept
+            binary_data.scan(/.{1,1024}/nm) do |s|
+              conn.print(s)
+            end
+            conn.close
+            data_server.close
+            sock.print("226 Transfer complete.\r\n")
+          rescue OpenSSL::SSL::SSLError
+          end
+        ensure
+          sock.close
+          server.close
+        end
+      end
+      ftp = Net::FTP.new("localhost",
+                         port: port,
+                         ssl: { ca_file: CA_FILE },
+                         private_data_connection: false,
+                         passive: true)
+      begin
+        assert_equal("AUTH TLS\r\n", commands.shift)
+        ftp.login
+        assert_match(/\AUSER /, commands.shift)
+        assert_match(/\APASS /, commands.shift)
+        assert_equal("TYPE I\r\n", commands.shift)
+        buf = ftp.getbinaryfile("foo", nil)
+        assert_equal(binary_data, buf)
+        assert_equal(Encoding::ASCII_8BIT, buf.encoding)
+        assert_equal("PASV\r\n", commands.shift)
+        assert_equal("RETR foo\r\n", commands.shift)
+        assert_equal(nil, commands.shift)
+      ensure
+        ftp.close
+      end
+    end
   end
 
   private
