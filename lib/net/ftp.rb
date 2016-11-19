@@ -590,9 +590,6 @@ module Net
               break if data == nil
               yield(data)
             end
-#            conn.shutdown(Socket::SHUT_WR)
-#            conn.read_timeout = 1
-#            conn.read
           ensure
             conn.close if conn
           end
@@ -617,9 +614,6 @@ module Net
               break if line == nil
               yield(line.sub(/\r?\n\z/, ""), !line.match(/\n\z/).nil?)
             end
-#            conn.shutdown(Socket::SHUT_WR)
-#            conn.read_timeout = 1
-#            conn.read
           ensure
             conn.close if conn
           end
