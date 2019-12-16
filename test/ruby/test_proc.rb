@@ -1611,5 +1611,40 @@ class TestProcKeywords < Test::Unit::TestCase
     assert_equal(1, (f << g).call(**{})[:a])
     assert_raise(ArgumentError) { (f >> g).call(**{})[:a] }
   end
+
+  def test_using_without_proc_refinements
+    assert_raise(RuntimeError) do
+      Proc.new {}.using(Module.new)
+    end
+  end
+
+  using Proc::Refinements
+
+  def test_using_with_symbol_proc
+    assert_raise(RuntimeError) do
+      :x.to_proc.using(Module.new)
+    end
+  end
+
+  def test_using_and_call
+    assert_equal "foo", Proc.new { "x".foo }.using(Module.new {
+      refine String do
+        def foo
+          "foo"
+        end
+      end
+    }).call
+  end
+
+  def test_using_and_instance_eval
+    f = Proc.new { [self, "x".foo] }.using(Module.new {
+      refine String do
+        def foo
+          "foo"
+        end
+      end
+    })
+    assert_equal([123, "foo"], 123.instance_eval(&f))
+  end
 end
 

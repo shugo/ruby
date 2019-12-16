@@ -726,6 +726,12 @@ vm_env_cref(const VALUE *ep)
     return check_cref(ep[VM_ENV_DATA_INDEX_ME_CREF], TRUE);
 }
 
+rb_cref_t *
+rb_vm_env_cref(const VALUE *ep)
+{
+    return vm_env_cref(ep);
+}
+
 static int
 is_cref(const VALUE v, int can_be_svar)
 {
@@ -3529,13 +3535,17 @@ vm_invoke_iseq_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
     const int arg_size = iseq->body->param.size;
     VALUE * const rsp = GET_SP() - calling->argc;
     int opt_pc = vm_callee_setup_block_arg(ec, calling, ci, iseq, rsp, is_lambda ? arg_setup_method : arg_setup_block);
+    const rb_cref_t *cref = 0;
 
     SET_SP(rsp);
 
+    if (iseq->body->param.flags.has_block_cref) {
+        cref = iseq->body->block_cref;
+    }
     vm_push_frame(ec, iseq,
 		  VM_FRAME_MAGIC_BLOCK | (is_lambda ? VM_FRAME_FLAG_LAMBDA : 0),
 		  captured->self,
-		  VM_GUARDED_PREV_EP(captured->ep), 0,
+		  VM_GUARDED_PREV_EP(captured->ep), (VALUE) cref,
 		  iseq->body->iseq_encoded + opt_pc,
 		  rsp + arg_size,
 		  iseq->body->local_table_size - arg_size, iseq->body->stack_max);

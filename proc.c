@@ -44,6 +44,7 @@ VALUE rb_cUnboundMethod;
 VALUE rb_cMethod;
 VALUE rb_cBinding;
 VALUE rb_cProc;
+VALUE rb_mProcRefinements;
 
 static rb_block_call_func bmcall;
 static int method_arity(VALUE);
@@ -3671,6 +3672,42 @@ proc_ruby2_keywords(VALUE procval)
     return procval;
 }
 
+static VALUE
+proc_using(VALUE procval, VALUE module)
+{
+    rb_proc_t *proc;
+    rb_cref_t *cref;
+    const VALUE *ep;
+    /* const rb_env_t *env; */
+    const rb_iseq_t *iseq;
+    GetProcPtr(procval, proc);
+
+    rb_check_frozen(procval);
+
+    if (proc->is_from_method || proc->block.type != block_type_iseq) {
+        rb_raise(rb_eRuntimeError,
+                 "Proc#using is available only for Ruby-level proc");
+    }
+    iseq = proc->block.as.captured.code.iseq;
+    if (iseq->body->param.flags.has_block_cref) {
+        cref = iseq->body->block_cref;
+    }
+    else {
+        ep = proc->block.as.captured.ep;
+        cref = rb_vm_env_cref(ep);
+        if (!CREF_PROC_REFINEMENTS_ENABLED(cref)) {
+            rb_raise(rb_eRuntimeError,
+                     "`using Proc::Refinements` should be called before the given block");
+        }
+        cref = rb_vm_cref_dup(cref);
+        iseq->body->block_cref = cref;
+        iseq->body->param.flags.has_block_cref = 1;
+    }
+    rb_using_module(cref, module);
+
+    return procval;
+}
+
 /*
  *  Document-class: LocalJumpError
  *
@@ -4049,6 +4086,9 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "source_location", rb_proc_location, 0);
     rb_define_method(rb_cProc, "parameters", rb_proc_parameters, 0);
     rb_define_method(rb_cProc, "ruby2_keywords", proc_ruby2_keywords, 0);
+    rb_define_method(rb_cProc, "using", proc_using, 1);
+
+    rb_mProcRefinements = rb_define_module_under(rb_cProc, "Refinements");
 
     /* Exceptions */
     rb_eLocalJumpError = rb_define_class("LocalJumpError", rb_eStandardError);

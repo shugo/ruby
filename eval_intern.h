@@ -187,8 +187,9 @@ rb_ec_tag_jump(const rb_execution_context_t *ec, enum ruby_tag_type st)
 
 /* CREF operators */
 
-#define CREF_FL_PUSHED_BY_EVAL IMEMO_FL_USER1
-#define CREF_FL_OMOD_SHARED    IMEMO_FL_USER2
+#define CREF_FL_PUSHED_BY_EVAL           IMEMO_FL_USER1
+#define CREF_FL_OMOD_SHARED              IMEMO_FL_USER2
+#define CREF_FL_PROC_REFINEMENTS_ENABLED IMEMO_FL_USER3
 
 static inline VALUE
 CREF_CLASS(const rb_cref_t *cref)
@@ -250,6 +251,18 @@ CREF_OMOD_SHARED_UNSET(rb_cref_t *cref)
     cref->flags &= ~CREF_FL_OMOD_SHARED;
 }
 
+static inline int
+CREF_PROC_REFINEMENTS_ENABLED(const rb_cref_t *cref)
+{
+    return cref->flags & CREF_FL_PROC_REFINEMENTS_ENABLED;
+}
+
+static inline void
+CREF_PROC_REFINEMENTS_ENABLED_SET(rb_cref_t *cref)
+{
+    cref->flags |= CREF_FL_PROC_REFINEMENTS_ENABLED;
+}
+
 enum {
     RAISED_EXCEPTION = 1,
     RAISED_STACKOVERFLOW = 2,
@@ -278,7 +291,9 @@ NORETURN(void rb_vm_jump_tag_but_local_jump(int));
 
 VALUE rb_vm_make_jump_tag_but_local_jump(int state, VALUE val);
 rb_cref_t *rb_vm_cref(void);
+rb_cref_t *rb_vm_env_cref(const VALUE *);
 rb_cref_t *rb_vm_cref_replace_with_duplicated_cref(void);
+rb_cref_t *rb_vm_cref_dup(const rb_cref_t *);
 VALUE rb_vm_call_cfunc(VALUE recv, VALUE (*func)(VALUE), VALUE arg, VALUE block_handler, VALUE filename);
 void rb_vm_set_progname(VALUE filename);
 void rb_thread_terminate_all(void);
@@ -288,6 +303,9 @@ VALUE rb_vm_cbase(void);
 VALUE rb_ec_backtrace_object(const rb_execution_context_t *ec);
 VALUE rb_ec_backtrace_str_ary(const rb_execution_context_t *ec, long lev, long n);
 VALUE rb_ec_backtrace_location_ary(const rb_execution_context_t *ec, long lev, long n);
+
+/* eval.c */
+void rb_using_module(rb_cref_t *cref, VALUE module);
 
 #ifndef CharNext		/* defined as CharNext[AW] on Windows. */
 # ifdef HAVE_MBLEN

@@ -1477,9 +1477,11 @@ using_module_recursive(const rb_cref_t *cref, VALUE klass)
  * \todo can be static?
  */
 void
-rb_using_module(const rb_cref_t *cref, VALUE module)
+rb_using_module(rb_cref_t *cref, VALUE module)
 {
     Check_Type(module, T_MODULE);
+    if (module == rb_mProcRefinements)
+        CREF_PROC_REFINEMENTS_ENABLED_SET(cref);
     using_module_recursive(cref, module);
     rb_clear_method_cache_all();
 }
