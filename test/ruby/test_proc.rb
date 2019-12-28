@@ -1646,5 +1646,58 @@ class TestProcKeywords < Test::Unit::TestCase
     })
     assert_equal([123, "foo"], 123.instance_eval(&f))
   end
+
+  def test_using_multiple_procs_of_same_block
+    m1 = Module.new {
+      refine String do
+        def foo
+          "m1:foo"
+        end
+      end
+    }
+    m2 = Module.new {
+      refine String do
+        def foo
+          "m2:foo"
+        end
+      end
+    }
+    result = [m1, m2].map { |m|
+      Proc.new {
+        [m, "x".foo, Module.used_modules]
+      }.using(m).call
+    }
+    assert_equal([[m1, "m1:foo", [m1]], [m2, "m2:foo", [m2, m1]]], result)
+  end
+
+  def test_using_with_threads
+    m1 = Module.new {
+      refine String do
+        def foo
+          "m1:foo"
+        end
+      end
+    }
+    m2 = Module.new {
+      refine String do
+        def foo
+          "m2:foo"
+        end
+      end
+    }
+    result = 100.times.map { |i|
+      Thread.new(i.even? ? m1 : m2) { |m|
+        f = Proc.new {
+          [m, Module.used_modules, "x".foo]
+        }.using(m)
+        Thread.pass
+        f.call
+      }
+    }.map(&:value)
+    result.each do |m, used_modules, s|
+      assert_equal(true, used_modules.include?(m))
+      assert_match(/\Am.:foo\z/, s)
+    end
+  end
 end
 
