@@ -1614,7 +1614,7 @@ class TestProcKeywords < Test::Unit::TestCase
 
   def test_using_without_proc_refinements
     assert_raise(RuntimeError) do
-      Proc.new {}.using(Module.new)
+      eval('Proc.new {}.using(Module.new)', TOPLEVEL_BINDING)
     end
   end
 
