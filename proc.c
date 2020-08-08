@@ -3672,6 +3672,56 @@ proc_ruby2_keywords(VALUE procval)
     return procval;
 }
 
+static int
+ensure_refinement_used(VALUE klass, VALUE module, VALUE arg)
+{
+    rb_cref_t *cref = (rb_cref_t *) arg;
+    VALUE c;
+
+    if (!NIL_P(c = rb_hash_lookup(CREF_REFINEMENTS(cref), klass))) {
+        while (c && RB_TYPE_P(c, T_ICLASS)) {
+            if (RBASIC(c)->klass == module) {
+                /* already used refinement */
+                return ST_CONTINUE;
+            }
+            c = RCLASS_SUPER(c);
+        }
+    }
+    rb_raise(rb_eRuntimeError,
+             "Proc#using can't be used once the Proc has been called");
+}
+
+static void
+ensure_proc_refinements_used(const rb_cref_t *cref, VALUE klass)
+{
+    ID id_refinements;
+    VALUE super, module, refinements;
+
+    super = RCLASS_SUPER(klass);
+    if (super) {
+	ensure_proc_refinements_used(cref, super);
+    }
+    switch (BUILTIN_TYPE(klass)) {
+      case T_MODULE:
+	module = klass;
+	break;
+
+      case T_ICLASS:
+	module = RBASIC(klass)->klass;
+	break;
+
+      default:
+	rb_raise(rb_eTypeError, "wrong argument type %s (expected Module)",
+		 rb_obj_classname(klass));
+	break;
+    }
+    CONST_ID(id_refinements, "__refinements__");
+    refinements = rb_attr_get(module, id_refinements);
+    if (NIL_P(refinements)) return;
+    rb_hash_foreach(refinements, ensure_refinement_used, (VALUE) cref);
+}
+
+
 static VALUE
 proc_using(VALUE procval, VALUE module)
 {
@@ -3683,6 +3733,7 @@ proc_using(VALUE procval, VALUE module)
     GetProcPtr(procval, proc);
 
     rb_check_frozen(procval);
+    Check_Type(module, T_MODULE);
 
     if (proc->is_from_method || proc->block.type != block_type_iseq) {
         rb_raise(rb_eRuntimeError,
@@ -3693,6 +3744,10 @@ proc_using(VALUE procval, VALUE module)
         cref = iseq->body->block_cref;
     }
     else {
+        if (iseq->body->param.flags.once_called) {
+            rb_raise(rb_eRuntimeError,
+                     "Proc#using can't be used once the Proc has been called");
+        }
         ep = proc->block.as.captured.ep;
         cref = rb_vm_env_cref(ep);
         if (!CREF_PROC_REFINEMENTS_ENABLED(cref)) {
@@ -3703,7 +3758,12 @@ proc_using(VALUE procval, VALUE module)
         iseq->body->block_cref = cref;
         iseq->body->param.flags.has_block_cref = 1;
     }
-    rb_using_module(cref, module);
+    if (iseq->body->param.flags.once_called) {
+        ensure_proc_refinements_used(cref, module);
+    }
+    else {
+        rb_using_module(cref, module);
+    }
 
     return procval;
 }

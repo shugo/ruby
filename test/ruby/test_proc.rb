@@ -1662,12 +1662,13 @@ class TestProcKeywords < Test::Unit::TestCase
         end
       end
     }
-    result = [m1, m2].map { |m|
-      Proc.new {
-        [m, "x".foo, Module.used_modules]
-      }.using(m).call
-    }
-    assert_equal([[m1, "m1:foo", [m1]], [m2, "m2:foo", [m2, m1]]], result)
+    assert_raise(RuntimeError) do
+      [m1, m2].each do |m|
+        Proc.new {
+          [m, "x".foo, Module.used_modules]
+        }.using(m).call
+      end
+    end
   end
 
   def test_using_with_threads

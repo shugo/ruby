@@ -346,6 +346,7 @@ struct rb_iseq_constant_body {
 	    unsigned int accepts_no_kwarg : 1;
             unsigned int ruby2_keywords: 1;
             unsigned int has_block_cref: 1; /* for Proc#using */
+            unsigned int once_called: 1;
 	} flags;
 
 	unsigned int size;
