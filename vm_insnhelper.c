@@ -3539,8 +3539,10 @@ vm_invoke_iseq_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
 
     SET_SP(rsp);
 
-    iseq->body->param.flags.once_called = 1;
-    if (iseq->body->param.flags.has_block_cref) {
+    if (UNLIKELY(!iseq->body->param.flags.once_called)) {
+        iseq->body->param.flags.once_called = 1;
+    }
+    if (UNLIKELY(iseq->body->param.flags.has_block_cref)) {
         cref = iseq->body->block_cref;
     }
     vm_push_frame(ec, iseq,

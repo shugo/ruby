@@ -1765,16 +1765,17 @@ yield_under(VALUE under, VALUE self, int argc, const VALUE *argv, int kw_splat)
 	VM_FORCE_WRITE_SPECIAL_CONST(&VM_CF_LEP(ec->cfp)[VM_ENV_DATA_INDEX_SPECVAL], new_block_handler);
     }
 
-    if (vm_block_handler_type(block_handler) == block_handler_type_iseq) {
+    if (UNLIKELY(vm_block_handler_type(block_handler) == block_handler_type_iseq &&
+                 !captured->code.iseq->body->param.flags.once_called)) {
         captured->code.iseq->body->param.flags.once_called = 1;
-        if (captured->code.iseq->body->param.flags.has_block_cref) {
+        if (UNLIKELY(captured->code.iseq->body->param.flags.has_block_cref)) {
             const rb_iseq_t *iseq = captured->code.iseq;
             rb_cref_t *prev_cref = iseq->body->block_cref;
             cref = vm_cref_new(under, METHOD_VISI_PUBLIC, FALSE, prev_cref,
                                TRUE);
         }
     }
-    if (cref == NULL) {
+    if (LIKELY(cref == NULL)) {
         cref = vm_cref_push(ec, under, ep, TRUE);
     }
     return vm_yield_with_cref(ec, argc, argv, kw_splat, cref, is_lambda);
