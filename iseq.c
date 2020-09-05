@@ -367,6 +367,9 @@ rb_iseq_mark(const rb_iseq_t *iseq)
 #if USE_MJIT
         mjit_mark_cc_entries(body);
 #endif
+        if (body->param.flags.has_block_cref) {
+            rb_gc_mark((VALUE) iseq->body->block_cref);
+        }
     }
 
     if (FL_TEST_RAW((VALUE)iseq, ISEQ_NOT_LOADED_YET)) {

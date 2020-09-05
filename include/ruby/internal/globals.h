@@ -66,6 +66,7 @@ RUBY_EXTERN VALUE rb_cNameErrorMesg;
 RUBY_EXTERN VALUE rb_cNilClass;
 RUBY_EXTERN VALUE rb_cNumeric;
 RUBY_EXTERN VALUE rb_cProc;
+RUBY_EXTERN VALUE rb_mProcRefinements;
 RUBY_EXTERN VALUE rb_cRandom;
 RUBY_EXTERN VALUE rb_cRange;
 RUBY_EXTERN VALUE rb_cRational;

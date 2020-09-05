@@ -1611,5 +1611,94 @@ class TestProcKeywords < Test::Unit::TestCase
     assert_equal(1, (f << g).call(**{})[:a])
     assert_raise(ArgumentError) { (f >> g).call(**{})[:a] }
   end
+
+  def test_using_without_proc_refinements
+    assert_raise(RuntimeError) do
+      eval('Proc.new {}.using(Module.new)', TOPLEVEL_BINDING)
+    end
+  end
+
+  using Proc::Refinements
+
+  def test_using_with_symbol_proc
+    assert_raise(RuntimeError) do
+      :x.to_proc.using(Module.new)
+    end
+  end
+
+  def test_using_and_call
+    assert_equal "foo", Proc.new { "x".foo }.using(Module.new {
+      refine String do
+        def foo
+          "foo"
+        end
+      end
+    }).call
+  end
+
+  def test_using_and_instance_eval
+    f = Proc.new { [self, "x".foo] }.using(Module.new {
+      refine String do
+        def foo
+          "foo"
+        end
+      end
+    })
+    assert_equal([123, "foo"], 123.instance_eval(&f))
+  end
+
+  def test_using_multiple_procs_of_same_block
+    m1 = Module.new {
+      refine String do
+        def foo
+          "m1:foo"
+        end
+      end
+    }
+    m2 = Module.new {
+      refine String do
+        def foo
+          "m2:foo"
+        end
+      end
+    }
+    assert_raise(RuntimeError) do
+      [m1, m2].each do |m|
+        Proc.new {
+          [m, "x".foo, Module.used_modules]
+        }.using(m).call
+      end
+    end
+  end
+
+  def test_using_with_threads
+    m1 = Module.new {
+      refine String do
+        def foo
+          "m1:foo"
+        end
+      end
+    }
+    m2 = Module.new {
+      refine String do
+        def foo
+          "m2:foo"
+        end
+      end
+    }
+    result = 100.times.map { |i|
+      Thread.new(i.even? ? m1 : m2) { |m|
+        f = Proc.new {
+          [m, Module.used_modules, "x".foo]
+        }.using(m)
+        Thread.pass
+        f.call
+      }
+    }.map(&:value)
+    result.each do |m, used_modules, s|
+      assert_equal(true, used_modules.include?(m))
+      assert_match(/\Am.:foo\z/, s)
+    end
+  end
 end
 

@@ -44,6 +44,7 @@ VALUE rb_cUnboundMethod;
 VALUE rb_cMethod;
 VALUE rb_cBinding;
 VALUE rb_cProc;
+VALUE rb_mProcRefinements;
 
 static rb_block_call_func bmcall;
 static int method_arity(VALUE);
@@ -3671,6 +3672,102 @@ proc_ruby2_keywords(VALUE procval)
     return procval;
 }
 
+static int
+ensure_refinement_used(VALUE klass, VALUE module, VALUE arg)
+{
+    rb_cref_t *cref = (rb_cref_t *) arg;
+    VALUE c;
+
+    if (!NIL_P(c = rb_hash_lookup(CREF_REFINEMENTS(cref), klass))) {
+        while (c && RB_TYPE_P(c, T_ICLASS)) {
+            if (RBASIC(c)->klass == module) {
+                /* already used refinement */
+                return ST_CONTINUE;
+            }
+            c = RCLASS_SUPER(c);
+        }
+    }
+    rb_raise(rb_eRuntimeError,
+             "Proc#using can't be used once the Proc has been called");
+}
+
+static void
+ensure_proc_refinements_used(const rb_cref_t *cref, VALUE klass)
+{
+    ID id_refinements;
+    VALUE super, module, refinements;
+
+    super = RCLASS_SUPER(klass);
+    if (super) {
+	ensure_proc_refinements_used(cref, super);
+    }
+    switch (BUILTIN_TYPE(klass)) {
+      case T_MODULE:
+	module = klass;
+	break;
+
+      case T_ICLASS:
+	module = RBASIC(klass)->klass;
+	break;
+
+      default:
+	rb_raise(rb_eTypeError, "wrong argument type %s (expected Module)",
+		 rb_obj_classname(klass));
+	break;
+    }
+    CONST_ID(id_refinements, "__refinements__");
+    refinements = rb_attr_get(module, id_refinements);
+    if (NIL_P(refinements)) return;
+    rb_hash_foreach(refinements, ensure_refinement_used, (VALUE) cref);
+}
+
+
+static VALUE
+proc_using(VALUE procval, VALUE module)
+{
+    rb_proc_t *proc;
+    rb_cref_t *cref;
+    const VALUE *ep;
+    /* const rb_env_t *env; */
+    const rb_iseq_t *iseq;
+    GetProcPtr(procval, proc);
+
+    rb_check_frozen(procval);
+    Check_Type(module, T_MODULE);
+
+    if (proc->is_from_method || proc->block.type != block_type_iseq) {
+        rb_raise(rb_eRuntimeError,
+                 "Proc#using is available only for Ruby-level proc");
+    }
+    iseq = proc->block.as.captured.code.iseq;
+    if (iseq->body->param.flags.has_block_cref) {
+        cref = iseq->body->block_cref;
+    }
+    else {
+        if (iseq->body->param.flags.once_called) {
+            rb_raise(rb_eRuntimeError,
+                     "Proc#using can't be used once the Proc has been called");
+        }
+        ep = proc->block.as.captured.ep;
+        cref = rb_vm_env_cref(ep);
+        if (!CREF_PROC_REFINEMENTS_ENABLED(cref)) {
+            rb_raise(rb_eRuntimeError,
+                     "`using Proc::Refinements` should be called before the given block");
+        }
+        cref = rb_vm_cref_dup(cref);
+        iseq->body->block_cref = cref;
+        iseq->body->param.flags.has_block_cref = 1;
+    }
+    if (iseq->body->param.flags.once_called) {
+        ensure_proc_refinements_used(cref, module);
+    }
+    else {
+        rb_using_module(cref, module);
+    }
+
+    return procval;
+}
+
 /*
  *  Document-class: LocalJumpError
  *
@@ -4049,6 +4146,9 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "source_location", rb_proc_location, 0);
     rb_define_method(rb_cProc, "parameters", rb_proc_parameters, 0);
     rb_define_method(rb_cProc, "ruby2_keywords", proc_ruby2_keywords, 0);
+    rb_define_method(rb_cProc, "using", proc_using, 1);
+
+    rb_mProcRefinements = rb_define_module_under(rb_cProc, "Refinements");
 
     /* Exceptions */
     rb_eLocalJumpError = rb_define_class("LocalJumpError", rb_eStandardError);

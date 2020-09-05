@@ -250,6 +250,8 @@ vm_cref_new0(VALUE klass, rb_method_visibility_t visi, int module_func, rb_cref_
 
     if (pushed_by_eval) CREF_PUSHED_BY_EVAL_SET(cref);
     if (omod_shared) CREF_OMOD_SHARED_SET(cref);
+    if (prev_cref && CREF_PROC_REFINEMENTS_ENABLED(prev_cref))
+        CREF_PROC_REFINEMENTS_ENABLED_SET(cref);
 
     return cref;
 }
@@ -288,6 +290,8 @@ vm_cref_dup(const rb_cref_t *cref)
         CREF_REFINEMENTS_SET(new_cref, ref);
 	CREF_OMOD_SHARED_UNSET(new_cref);
     }
+    if (CREF_PROC_REFINEMENTS_ENABLED(cref))
+        CREF_PROC_REFINEMENTS_ENABLED_SET(new_cref);
 
     return new_cref;
 }
@@ -1455,6 +1459,12 @@ rb_vm_cref_replace_with_duplicated_cref(void)
     const rb_control_frame_t *cfp = rb_vm_get_ruby_level_next_cfp(ec, ec->cfp);
     rb_cref_t *cref = vm_cref_replace_with_duplicated_cref(cfp->ep);
     return cref;
+}
+
+rb_cref_t *
+rb_vm_cref_dup(const rb_cref_t *cref)
+{
+    return vm_cref_dup(cref);
 }
 
 const rb_cref_t *

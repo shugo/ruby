@@ -345,6 +345,8 @@ struct rb_iseq_constant_body {
 	    unsigned int ambiguous_param0 : 1; /* {|a|} */
 	    unsigned int accepts_no_kwarg : 1;
             unsigned int ruby2_keywords: 1;
+            unsigned int has_block_cref: 1; /* for Proc#using */
+            unsigned int once_called: 1;
 	} flags;
 
 	unsigned int size;
@@ -420,6 +422,8 @@ struct rb_iseq_constant_body {
     char catch_except_p; /* If a frame of this ISeq may catch exception, set TRUE */
     bool builtin_inline_p; // This ISeq's builtin func is safe to be inlined by MJIT
     char access_outer_variables;
+
+    rb_cref_t *block_cref; /* for Proc#using */
 
 #if USE_MJIT
     /* The following fields are MJIT related info.  */
