@@ -118,7 +118,6 @@ module SyncDefaultGems
       "rdoc-ref:#{mod || name.chomp("_rdoc") + ".rdoc"}#{scope}#{label}"
     end
     changed or return false
-    File.rename(file, file + "~")
     File.binwrite(file, src)
     return true
   end
@@ -315,6 +314,7 @@ module SyncDefaultGems
       rm_rf(%w[lib/cgi.rb lib/cgi ext/cgi test/cgi])
       cp_r("#{upstream}/ext/cgi", "ext")
       cp_r("#{upstream}/lib", ".")
+      rm_rf("lib/cgi/escape.jar")
       cp_r("#{upstream}/test/cgi", "test")
       cp_r("#{upstream}/cgi.gemspec", "lib/cgi")
       `git checkout ext/cgi/escape/depend`
@@ -648,7 +648,12 @@ module SyncDefaultGems
       `git fetch origin --tags`
 
       if release
-        last_release = `git tag`.chomp.split.delete_if{|v| v =~ /pre|beta/ }.last
+        last_release = `git tag | sort -V`.chomp.split.delete_if{|v| v =~ /pre|beta/ }.last
+        if gem == "syntax_suggest"
+          # for syntax_suggest v1.0.1
+          # https://github.com/ruby/syntax_suggest/issues/167.
+          last_release = "3cd67bcc13"
+        end
         `git checkout #{last_release}`
       else
         `git checkout #{default_branch}`

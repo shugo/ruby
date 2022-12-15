@@ -660,7 +660,7 @@ fn jump_to_next_insn(
 ) {
     // Reset the depth since in current usages we only ever jump to to
     // chain_depth > 0 from the same instruction.
-    let mut reset_depth = *current_context;
+    let mut reset_depth = current_context.clone();
     reset_depth.reset_chain_depth();
 
     let jump_block = BlockId {
@@ -1870,7 +1870,7 @@ fn jit_chain_guard(
     };
 
     if (ctx.get_chain_depth() as i32) < depth_limit {
-        let mut deeper = *ctx;
+        let mut deeper = ctx.clone();
         deeper.increment_chain_depth();
         let bid = BlockId {
             iseq: jit.iseq,
@@ -1964,7 +1964,7 @@ fn gen_get_ivar(
     side_exit: CodePtr,
 ) -> CodegenStatus {
     let comptime_val_klass = comptime_receiver.class_of();
-    let starting_context = *ctx; // make a copy for use with jit_chain_guard
+    let starting_context = ctx.clone(); // make a copy for use with jit_chain_guard
 
     // If recv isn't already a register, load it.
     let recv = match recv {
@@ -2045,9 +2045,8 @@ fn gen_get_ivar(
     let embed_test_result = unsafe { FL_TEST_RAW(comptime_receiver, VALUE(ROBJECT_EMBED.as_usize())) != VALUE(0) };
 
     let expected_shape = unsafe { rb_shape_get_shape_id(comptime_receiver) };
-    let shape_bit_size = unsafe { rb_shape_id_num_bits() }; // either 16 or 32 depending on RUBY_DEBUG
     let shape_id_offset = unsafe { rb_shape_id_offset() };
-    let shape_opnd = Opnd::mem(shape_bit_size, recv, shape_id_offset);
+    let shape_opnd = Opnd::mem(SHAPE_ID_NUM_BITS as u8, recv, shape_id_offset);
 
     asm.comment("guard shape");
     asm.cmp(shape_opnd, Opnd::UImm(expected_shape as u64));
@@ -2179,7 +2178,7 @@ fn gen_setinstancevariable(
     asm: &mut Assembler,
     ocb: &mut OutlinedCb,
 ) -> CodegenStatus {
-    let starting_context = *ctx; // make a copy for use with jit_chain_guard
+    let starting_context = ctx.clone(); // make a copy for use with jit_chain_guard
 
     // Defer compilation so we can specialize on a runtime `self`
     if !jit_at_current_insn(jit) {
@@ -2220,9 +2219,6 @@ fn gen_setinstancevariable(
         let ic = jit_get_arg(jit, 1).as_u64(); // type IVC
 
         // The function could raise exceptions.
-        jit_prepare_routine_call(jit, ctx, asm);
-
-        // Save the PC and SP because the callee may allocate
         // Note that this modifies REG_SP, which is why we do it first
         jit_prepare_routine_call(jit, ctx, asm);
 
@@ -2269,9 +2265,8 @@ fn gen_setinstancevariable(
         }
 
         let expected_shape = unsafe { rb_shape_get_shape_id(comptime_receiver) };
-        let shape_bit_size = unsafe { rb_shape_id_num_bits() }; // either 16 or 32 depending on RUBY_DEBUG
         let shape_id_offset = unsafe { rb_shape_id_offset() };
-        let shape_opnd = Opnd::mem(shape_bit_size, recv, shape_id_offset);
+        let shape_opnd = Opnd::mem(SHAPE_ID_NUM_BITS as u8, recv, shape_id_offset);
 
         asm.comment("guard shape");
         asm.cmp(shape_opnd, Opnd::UImm(expected_shape as u64));
@@ -2334,9 +2329,8 @@ fn gen_setinstancevariable(
 
                 asm.comment("write shape");
 
-                let shape_bit_size = unsafe { rb_shape_id_num_bits() }; // either 16 or 32 depending on RUBY_DEBUG
                 let shape_id_offset = unsafe { rb_shape_id_offset() };
-                let shape_opnd = Opnd::mem(shape_bit_size, recv, shape_id_offset);
+                let shape_opnd = Opnd::mem(SHAPE_ID_NUM_BITS as u8, recv, shape_id_offset);
 
                 // Store the new shape
                 asm.store(shape_opnd, Opnd::UImm(new_shape_id as u64));
@@ -3307,6 +3301,77 @@ fn gen_opt_str_uminus(
     KeepCompiling
 }
 
+fn gen_opt_newarray_max(
+    jit: &mut JITState,
+    ctx: &mut Context,
+    asm: &mut Assembler,
+    _ocb: &mut OutlinedCb,
+) -> CodegenStatus {
+    let num = jit_get_arg(jit, 0).as_u32();
+
+    // Save the PC and SP because we may allocate
+    jit_prepare_routine_call(jit, ctx, asm);
+
+    extern "C" {
+        fn rb_vm_opt_newarray_max(ec: EcPtr, num: u32, elts: *const VALUE) -> VALUE;
+    }
+
+    let offset_magnitude = (SIZEOF_VALUE as u32) * num;
+    let values_opnd = ctx.sp_opnd(-(offset_magnitude as isize));
+    let values_ptr = asm.lea(values_opnd);
+
+    let val_opnd = asm.ccall(
+        rb_vm_opt_newarray_max as *const u8,
+        vec![
+            EC,
+            num.into(),
+            values_ptr
+        ],
+    );
+
+    ctx.stack_pop(num.as_usize());
+    let stack_ret = ctx.stack_push(Type::Unknown);
+    asm.mov(stack_ret, val_opnd);
+
+    KeepCompiling
+}
+
+fn gen_opt_newarray_min(
+    jit: &mut JITState,
+    ctx: &mut Context,
+    asm: &mut Assembler,
+    _ocb: &mut OutlinedCb,
+) -> CodegenStatus {
+
+    let num = jit_get_arg(jit, 0).as_u32();
+
+    // Save the PC and SP because we may allocate
+    jit_prepare_routine_call(jit, ctx, asm);
+
+    extern "C" {
+        fn rb_vm_opt_newarray_min(ec: EcPtr, num: u32, elts: *const VALUE) -> VALUE;
+    }
+
+    let offset_magnitude = (SIZEOF_VALUE as u32) * num;
+    let values_opnd = ctx.sp_opnd(-(offset_magnitude as isize));
+    let values_ptr = asm.lea(values_opnd);
+
+    let val_opnd = asm.ccall(
+        rb_vm_opt_newarray_min as *const u8,
+        vec![
+            EC,
+            num.into(),
+            values_ptr
+        ],
+    );
+
+    ctx.stack_pop(num.as_usize());
+    let stack_ret = ctx.stack_push(Type::Unknown);
+    asm.mov(stack_ret, val_opnd);
+
+    KeepCompiling
+}
+
 fn gen_opt_not(
     jit: &mut JITState,
     ctx: &mut Context,
@@ -3360,7 +3425,7 @@ fn gen_opt_case_dispatch(
         defer_compilation(jit, ctx, asm, ocb);
         return EndBlock;
     }
-    let starting_context = *ctx;
+    let starting_context = ctx.clone();
 
     let case_hash = jit_get_arg(jit, 0);
     let else_offset = jit_get_arg(jit, 1).as_u32();
@@ -4844,12 +4909,16 @@ fn gen_send_iseq(
 
     // No support for callees with these parameters yet as they require allocation
     // or complex handling.
-    if unsafe {
-        get_iseq_flags_has_rest(iseq)
-            || get_iseq_flags_has_post(iseq)
-            || get_iseq_flags_has_kwrest(iseq)
-    } {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+    if unsafe { get_iseq_flags_has_rest(iseq) } {
+        gen_counter_incr!(asm, send_iseq_has_rest);
+        return CantCompile;
+    }
+    if unsafe { get_iseq_flags_has_post(iseq) } {
+        gen_counter_incr!(asm, send_iseq_has_post);
+        return CantCompile;
+    }
+    if unsafe { get_iseq_flags_has_kwrest(iseq) } {
+        gen_counter_incr!(asm, send_iseq_has_kwrest);
         return CantCompile;
     }
 
@@ -4869,14 +4938,14 @@ fn gen_send_iseq(
     // positionals, then we need to allocate a hash. For now we're going to
     // call that too complex and bail.
     if supplying_kws && !unsafe { get_iseq_flags_has_kw(iseq) } {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+        gen_counter_incr!(asm, send_iseq_has_no_kw);
         return CantCompile;
     }
 
     // If we have a method accepting no kwargs (**nil), exit if we have passed
     // it any kwargs.
     if supplying_kws && unsafe { get_iseq_flags_accepts_no_kwarg(iseq) } {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+        gen_counter_incr!(asm, send_iseq_accepts_no_kwarg);
         return CantCompile;
     }
 
@@ -4891,7 +4960,7 @@ fn gen_send_iseq(
             // In this case (param.flags.has_block && local_iseq != iseq),
             // the block argument is setup as a local variable and requires
             // materialization (allocation). Bail.
-            gen_counter_incr!(asm, send_iseq_complex_callee);
+            gen_counter_incr!(asm, send_iseq_materialized_block);
             return CantCompile;
         }
     }
@@ -4925,12 +4994,12 @@ fn gen_send_iseq(
 
 
     if opt_num > 0 && flags & VM_CALL_ARGS_SPLAT != 0 {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+        gen_counter_incr!(asm, send_iseq_splat_with_opt);
         return CantCompile;
     }
 
     if doing_kw_call && flags & VM_CALL_ARGS_SPLAT != 0 {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+        gen_counter_incr!(asm, send_iseq_splat_with_kw);
         return CantCompile;
     }
 
@@ -4967,10 +5036,10 @@ fn gen_send_iseq(
     }
 
     // If we have unfilled optional arguments and keyword arguments then we
-    // would need to move adjust the arguments location to account for that.
+    // would need to adjust the arguments location to account for that.
     // For now we aren't handling this case.
     if doing_kw_call && opts_missing > 0 {
-        gen_counter_incr!(asm, send_iseq_complex_callee);
+        gen_counter_incr!(asm, send_iseq_missing_optional_kw);
         return CantCompile;
     }
 
@@ -4998,7 +5067,7 @@ fn gen_send_iseq(
             // We have so many keywords that (1 << num) encoded as a FIXNUM
             // (which shifts it left one more) no longer fits inside a 32-bit
             // immediate.
-            gen_counter_incr!(asm, send_iseq_complex_callee);
+            gen_counter_incr!(asm, send_iseq_too_many_kwargs);
             return CantCompile;
         }
 
@@ -5362,7 +5431,7 @@ fn gen_send_iseq(
     // Pop arguments and receiver in return context, push the return value
     // After the return, sp_offset will be 1. The codegen for leave writes
     // the return value in case of JIT-to-JIT return.
-    let mut return_ctx = *ctx;
+    let mut return_ctx = ctx.clone();
     return_ctx.stack_pop(sp_offset.try_into().unwrap());
     return_ctx.stack_push(Type::Unknown);
     return_ctx.set_sp_offset(1);
@@ -5731,7 +5800,7 @@ fn gen_send_general(
                         // instead we look up the method and call it,
                         // doing some stack shifting based on the VM_CALL_OPT_SEND flag
 
-                        let starting_context = *ctx;
+                        let starting_context = ctx.clone();
 
                         if argc == 0 {
                             gen_counter_incr!(asm, send_send_wrong_args);
@@ -6557,6 +6626,41 @@ fn gen_setclassvariable(
     KeepCompiling
 }
 
+fn gen_getconstant(
+    jit: &mut JITState,
+    ctx: &mut Context,
+    asm: &mut Assembler,
+    _ocb: &mut OutlinedCb,
+) -> CodegenStatus {
+
+    let id = jit_get_arg(jit, 0).as_usize();
+
+    // vm_get_ev_const can raise exceptions.
+    jit_prepare_routine_call(jit, ctx, asm);
+
+    let allow_nil_opnd = ctx.stack_pop(1);
+    let klass_opnd = ctx.stack_pop(1);
+
+    extern "C" {
+        fn rb_vm_get_ev_const(ec: EcPtr, klass: VALUE, id: ID, allow_nil: VALUE) -> VALUE;
+    }
+
+    let val_opnd = asm.ccall(
+        rb_vm_get_ev_const as *const u8,
+        vec![
+            EC,
+            klass_opnd,
+            id.into(),
+            allow_nil_opnd
+        ],
+    );
+
+    let top = ctx.stack_push(Type::Unknown);
+    asm.mov(top, val_opnd);
+
+    KeepCompiling
+}
+
 fn gen_opt_getconstant_path(
     jit: &mut JITState,
     ctx: &mut Context,
@@ -6645,7 +6749,7 @@ fn gen_getblockparamproxy(
         return EndBlock;
     }
 
-    let starting_context = *ctx; // make a copy for use with jit_chain_guard
+    let starting_context = ctx.clone(); // make a copy for use with jit_chain_guard
 
     // A mirror of the interpreter code. Checking for the case
     // where it's pushing rb_block_param_proxy.
@@ -6934,6 +7038,8 @@ fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
         YARVINSN_opt_mod => Some(gen_opt_mod),
         YARVINSN_opt_str_freeze => Some(gen_opt_str_freeze),
         YARVINSN_opt_str_uminus => Some(gen_opt_str_uminus),
+        YARVINSN_opt_newarray_max => Some(gen_opt_newarray_max),
+        YARVINSN_opt_newarray_min => Some(gen_opt_newarray_min),
         YARVINSN_splatarray => Some(gen_splatarray),
         YARVINSN_concatarray => Some(gen_concatarray),
         YARVINSN_newrange => Some(gen_newrange),
@@ -6959,6 +7065,7 @@ fn get_gen_fn(opcode: VALUE) -> Option<InsnGenFn> {
         YARVINSN_opt_size => Some(gen_opt_size),
         YARVINSN_opt_length => Some(gen_opt_length),
         YARVINSN_opt_regexpmatch2 => Some(gen_opt_regexpmatch2),
+        YARVINSN_getconstant => Some(gen_getconstant),
         YARVINSN_opt_getconstant_path => Some(gen_opt_getconstant_path),
         YARVINSN_invokebuiltin => Some(gen_invokebuiltin),
         YARVINSN_opt_invokebuiltin_delegate => Some(gen_opt_invokebuiltin_delegate),
@@ -7070,8 +7177,6 @@ impl CodegenGlobals {
             use std::cell::RefCell;
             use std::rc::Rc;
 
-            let code_page_size = get_option!(code_page_size);
-
             let virt_block: *mut u8 = unsafe { rb_yjit_reserve_addr_space(mem_size as u32) };
 
             // Memory protection syscalls need page-aligned addresses, so check it here. Assuming
@@ -7086,7 +7191,6 @@ impl CodegenGlobals {
                 virt_block as usize % page_size.as_usize(), 0,
                 "Start of virtual address block should be page-aligned",
             );
-            assert_eq!(code_page_size % page_size.as_usize(), 0, "code_page_size was not page-aligned");
 
             use crate::virtualmem::*;
             use std::ptr::NonNull;
@@ -7099,8 +7203,10 @@ impl CodegenGlobals {
             );
             let mem_block = Rc::new(RefCell::new(mem_block));
 
-            let cb = CodeBlock::new(mem_block.clone(), code_page_size, false);
-            let ocb = OutlinedCb::wrap(CodeBlock::new(mem_block, code_page_size, true));
+            let cb = CodeBlock::new(mem_block.clone(), false);
+            let ocb = OutlinedCb::wrap(CodeBlock::new(mem_block, true));
+
+            assert_eq!(cb.page_size() % page_size.as_usize(), 0, "code page size is not page-aligned");
 
             (cb, ocb)
         };

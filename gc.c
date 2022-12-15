@@ -945,7 +945,6 @@ struct heap_page {
     short slot_size;
     short total_slots;
     short free_slots;
-    short pinned_slots;
     short final_slots;
     struct {
         unsigned int before_sweep : 1;
@@ -4714,6 +4713,7 @@ id2ref(VALUE objid)
     }
 }
 
+/* :nodoc: */
 static VALUE
 os_id2ref(VALUE os, VALUE objid)
 {
@@ -8421,20 +8421,20 @@ gc_compact_destination_pool(rb_objspace_t *objspace, rb_size_pool_t *src_pool, V
     size_t idx = 0;
 
     switch (BUILTIN_TYPE(src)) {
-        case T_ARRAY:
-            obj_size = rb_ary_size_as_embedded(src);
-            break;
+      case T_ARRAY:
+        obj_size = rb_ary_size_as_embedded(src);
+        break;
 
-        case T_OBJECT:
-            obj_size = rb_obj_embedded_size(ROBJECT_IV_CAPACITY(src));
-            break;
+      case T_OBJECT:
+        obj_size = rb_obj_embedded_size(ROBJECT_IV_CAPACITY(src));
+        break;
 
-        case T_STRING:
-            obj_size = rb_str_size_as_embedded(src);
-            break;
+      case T_STRING:
+        obj_size = rb_str_size_as_embedded(src);
+        break;
 
-        default:
-            return src_pool;
+      default:
+        return src_pool;
     }
 
     if (rb_gc_size_allocatable_p(obj_size)){
@@ -10955,7 +10955,7 @@ gc_count(rb_execution_context_t *ec, VALUE self)
 static VALUE
 gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned int orig_flags)
 {
-    static VALUE sym_major_by = Qnil, sym_gc_by, sym_immediate_sweep, sym_have_finalizer, sym_state;
+    static VALUE sym_major_by = Qnil, sym_gc_by, sym_immediate_sweep, sym_have_finalizer, sym_state, sym_need_major_by;
     static VALUE sym_nofree, sym_oldgen, sym_shady, sym_force, sym_stress;
 #if RGENGC_ESTIMATE_OLDMALLOC
     static VALUE sym_oldmalloc;
@@ -10963,7 +10963,7 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
     static VALUE sym_newobj, sym_malloc, sym_method, sym_capi;
     static VALUE sym_none, sym_marking, sym_sweeping;
     VALUE hash = Qnil, key = Qnil;
-    VALUE major_by;
+    VALUE major_by, need_major_by;
     unsigned int flags = orig_flags ? orig_flags : objspace->profile.latest_gc_info;
 
     if (SYMBOL_P(hash_or_key)) {
@@ -10983,6 +10983,7 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
         S(immediate_sweep);
         S(have_finalizer);
         S(state);
+        S(need_major_by);
 
         S(stress);
         S(nofree);
@@ -11019,6 +11020,20 @@ gc_info_decode(rb_objspace_t *objspace, const VALUE hash_or_key, const unsigned 
 #endif
       Qnil;
     SET(major_by, major_by);
+
+    if (orig_flags == 0) { /* set need_major_by only if flags not set explicitly */
+        unsigned int need_major_flags = objspace->rgengc.need_major_gc;
+        need_major_by =
+            (need_major_flags & GPR_FLAG_MAJOR_BY_NOFREE) ? sym_nofree :
+            (need_major_flags & GPR_FLAG_MAJOR_BY_OLDGEN) ? sym_oldgen :
+            (need_major_flags & GPR_FLAG_MAJOR_BY_SHADY)  ? sym_shady :
+            (need_major_flags & GPR_FLAG_MAJOR_BY_FORCE)  ? sym_force :
+#if RGENGC_ESTIMATE_OLDMALLOC
+            (need_major_flags & GPR_FLAG_MAJOR_BY_OLDMALLOC) ? sym_oldmalloc :
+#endif
+            Qnil;
+        SET(need_major_by, need_major_by);
+    }
 
     SET(gc_by,
         (flags & GPR_FLAG_NEWOBJ) ? sym_newobj :
