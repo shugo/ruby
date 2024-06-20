@@ -2757,7 +2757,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node_exits> block_open k_while k_until k_for allow_exits
 %type <node> top_compstmt top_stmts top_stmt begin_block endless_arg endless_command
 %type <node> bodystmt compstmt stmts stmt_or_begin stmt expr arg primary command command_call method_call
-%type <node> expr_value expr_value_do arg_value primary_value rel_expr
+%type <node> expr_value expr_value_do arg_value arg_value_do primary_value rel_expr
 %type <node_fcall> fcall
 %type <node> if_tail opt_else case_body case_args cases opt_rescue exc_list exc_var opt_ensure
 %type <node> args arg_splat call_args opt_call_args
@@ -4132,6 +4132,13 @@ arg_value	: arg
                     }
                 ;
 
+arg_value_do	: {COND_PUSH(1);} arg_value do {COND_POP();}
+                    {
+                        $$ = $2;
+                    /*% ripper: $:2 %*/
+                    }
+                ;
+
 aref_args	: none
                 | args trailer
                     {
@@ -4545,7 +4552,7 @@ primary		: literal
                         $$ = NEW_CASE3($2, $4, &@$);
                     /*% ripper: case!($:2, $:4) %*/
                     }
-                | k_for for_var keyword_in expr_value_do
+                | k_for for_var keyword_in arg_value_do
                   compstmt
                   k_end
                     {
