@@ -10203,36 +10203,24 @@ rb_str_chomp(int argc, VALUE *argv, VALUE str)
     return rb_str_subseq(str, 0, chompped_length(str, rs));
 }
 
-static int
-char_in_string(unsigned int c, VALUE chars, rb_encoding *enc)
-{
-    const char *p = RSTRING_PTR(chars);
-    const char *e = RSTRING_END(chars);
-
-    while (p < e) {
-        int n;
-        unsigned int cc = rb_enc_codepoint_len(p, e, &n, enc);
-        if (cc == c) return 1;
-        p += n;
-    }
-    return 0;
-}
-
 static long
 lstrip_offset_chars(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
 {
     const char *const start = s;
+    char table[TR_TABLE_SIZE];
+    VALUE del = 0, nodel = 0;
     rb_encoding *chars_enc;
 
     if (!s || s >= e) return 0;
 
     chars_enc = rb_enc_check(str, chars);
+    tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
 
     while (s < e) {
         int n;
         unsigned int cc = rb_enc_codepoint_len(s, e, &n, enc);
 
-        if (!char_in_string(cc, chars, chars_enc)) break;
+        if (!tr_find(cc, table, del, nodel)) break;
         s += n;
     }
     return s - start;
@@ -10358,6 +10346,8 @@ static long
 rstrip_offset_chars(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
 {
     const char *t;
+    char table[TR_TABLE_SIZE];
+    VALUE del = 0, nodel = 0;
     rb_encoding *chars_enc;
 
     rb_str_check_dummy_enc(enc);
@@ -10367,13 +10357,14 @@ rstrip_offset_chars(VALUE str, const char *s, const char *e, rb_encoding *enc, V
     if (!s || s >= e) return 0;
 
     chars_enc = rb_enc_check(str, chars);
+    tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
     t = e;
 
     /* remove trailing chars */
     char *tp;
     while ((tp = rb_enc_prev_char(s, t, e, enc)) != NULL) {
         unsigned int c = rb_enc_codepoint(tp, e, enc);
-        if (!char_in_string(c, chars, chars_enc)) break;
+        if (!tr_find(c, table, del, nodel)) break;
         t = tp;
     }
 
