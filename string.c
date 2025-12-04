@@ -10210,7 +10210,7 @@ lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE c
 
     if (!s || s >= e) return 0;
 
-    /* remove chars at head if given */
+    /* remove leading chars if given */
     if (!NIL_P(chars)) {
         char table[TR_TABLE_SIZE];
         VALUE del = 0, nodel = 0;
