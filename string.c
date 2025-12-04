@@ -10224,7 +10224,7 @@ lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE c
             int n;
             unsigned int cc = rb_enc_codepoint_len(s, e, &n, enc);
 
-            if (cc && !tr_find(cc, table, del, nodel)) break;
+            if (!tr_find(cc, table, del, nodel)) break;
             s += n;
         }
         return s - start;

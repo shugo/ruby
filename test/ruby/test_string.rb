@@ -2046,6 +2046,10 @@ CODE
     assert_equal(S("abc"), S("あああabcいいい").strip("あい"))
     assert_equal(S("abc"), S("いいいabcあああ").strip("あい"))
 
+    # Test with NUL characters
+    assert_equal(S("abc\0"), S("---abc\0--").strip("-"))
+    assert_equal(S("\0abc"), S("--\0abc---").strip("-"))
+
     # Test without modification
     assert_equal(S("abc"), S("abc").strip("-+"))
     assert_equal(S("abc"), S("abc").strip(""))
@@ -2079,6 +2083,9 @@ CODE
     # Test with multibyte characters
     assert_equal(S("abcいいい"), S("あああabcいいい").lstrip("あ"))
 
+    # Test with NUL characters
+    assert_equal(S("\0abc+++"), S("--\0abc+++").lstrip("-"))
+
     # Test without modification
     assert_equal(S("abc"), S("abc").lstrip("-"))
   end
@@ -2101,6 +2108,9 @@ CODE
 
     # Test with multibyte characters
     assert_equal(S("あああabc"), S("あああabcいいい").rstrip("い"))
+
+    # Test with NUL characters
+    assert_equal(S("---abc\0"), S("---abc\0++").rstrip("+"))
 
     # Test without modification
     assert_equal(S("abc"), S("abc").rstrip("-"))
