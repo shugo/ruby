@@ -10297,8 +10297,7 @@ rb_str_lstrip_bang(int argc, VALUE *argv, VALUE str)
  *    s.lstrip
  *    # => "abc\u0000\t\n\v\f\r "
  *
- *  When the optional +chars+ argument is provided, removes characters
- *  in +chars+ from the beginning of +self+:
+ *  If +chars+ is given, removes characters in +chars+ from the beginning of +self+:
  *
  *    s = "---abc+++"
  *    s.lstrip("-") # => "abc+++"
@@ -10419,8 +10418,7 @@ rb_str_rstrip_bang(int argc, VALUE *argv, VALUE str)
  *    s        # => "\u0000\t\n\v\f\r abc\u0000\t\n\v\f\r "
  *    s.rstrip # => "\u0000\t\n\v\f\r abc"
  *
- *  When the optional +chars+ argument is provided, removes characters
- *  in +chars+ from the end of +self+:
+ *  If +chars+ is given, removes characters in +chars+ from the end of +self+:
  *
  *    s = "---abc+++"
  *    s.rstrip("+") # => "---abc"
@@ -10501,8 +10499,7 @@ rb_str_strip_bang(int argc, VALUE *argv, VALUE str)
  *    # => "\u0000\t\n\v\f\r abc\u0000\t\n\v\f\r "
  *    s.strip # => "abc"
  *
- *  When the optional +chars+ argument is provided, removes characters
- *  in +chars+ from both ends of +self+:
+ *  If +chars+ is given, removes characters in +chars+ from both ends of +self+:
  *
  *    s = "---abc+++"
  *    s.strip("-+") # => "abc"
