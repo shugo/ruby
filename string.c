@@ -10204,34 +10204,31 @@ rb_str_chomp(int argc, VALUE *argv, VALUE str)
 }
 
 static long
-lstrip_offset_chars(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
+lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
 {
     const char *const start = s;
-    char table[TR_TABLE_SIZE];
-    VALUE del = 0, nodel = 0;
-    rb_encoding *chars_enc;
 
     if (!s || s >= e) return 0;
 
-    chars_enc = rb_enc_check(str, chars);
-    tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
+    /* remove chars at head if given */
+    if (!NIL_P(chars)) {
+        char table[TR_TABLE_SIZE];
+        VALUE del = 0, nodel = 0;
+        rb_encoding *chars_enc;
 
-    while (s < e) {
-        int n;
-        unsigned int cc = rb_enc_codepoint_len(s, e, &n, enc);
+        StringValue(chars);
+        chars_enc = rb_enc_check(str, chars);
+        tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
 
-        if (!tr_find(cc, table, del, nodel)) break;
-        s += n;
+        while (s < e) {
+            int n;
+            unsigned int cc = rb_enc_codepoint_len(s, e, &n, enc);
+
+            if (cc && !tr_find(cc, table, del, nodel)) break;
+            s += n;
+        }
+        return s - start;
     }
-    return s - start;
-}
-
-static long
-lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
-{
-    const char *const start = s;
-
-    if (!s || s >= e) return 0;
 
     /* remove spaces at head */
     if (single_byte_optimizable(str)) {
@@ -10251,8 +10248,7 @@ lstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
 
 /*
  *  call-seq:
- *    lstrip! -> self or nil
- *    lstrip!(chars) -> self or nil
+ *    lstrip!(chars = nil) -> self or nil
  *
  *  Like String#lstrip, except that:
  *
@@ -10275,15 +10271,7 @@ rb_str_lstrip_bang(int argc, VALUE *argv, VALUE str)
     str_modify_keep_cr(str);
     enc = STR_ENC_GET(str);
     RSTRING_GETMEM(str, start, olen);
-
-    if (NIL_P(chars)) {
-        loffset = lstrip_offset(str, start, start+olen, enc);
-    }
-    else {
-        StringValue(chars);
-        loffset = lstrip_offset_chars(str, start, start+olen, enc, chars);
-    }
-
+    loffset = lstrip_offset(str, start, start+olen, enc, chars);
     if (loffset > 0) {
         long len = olen-loffset;
         s = start + loffset;
@@ -10298,8 +10286,7 @@ rb_str_lstrip_bang(int argc, VALUE *argv, VALUE str)
 
 /*
  *  call-seq:
- *    lstrip -> new_string
- *    lstrip(chars) -> new_string
+ *    lstrip(chars = nil) -> new_string
  *
  *  Returns a copy of +self+ with leading whitespace removed;
  *  see {Whitespace in Strings}[rdoc-ref:String@Whitespace+in+Strings]:
@@ -10329,50 +10316,13 @@ rb_str_lstrip(int argc, VALUE *argv, VALUE str)
     rb_scan_args(argc, argv, "01", &chars);
 
     RSTRING_GETMEM(str, start, len);
-
-    if (NIL_P(chars)) {
-        loffset = lstrip_offset(str, start, start+len, STR_ENC_GET(str));
-    }
-    else {
-        StringValue(chars);
-        loffset = lstrip_offset_chars(str, start, start+len, STR_ENC_GET(str), chars);
-    }
-
+    loffset = lstrip_offset(str, start, start+len, STR_ENC_GET(str), chars);
     if (loffset <= 0) return str_duplicate(rb_cString, str);
     return rb_str_subseq(str, loffset, len - loffset);
 }
 
 static long
-rstrip_offset_chars(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
-{
-    const char *t;
-    char table[TR_TABLE_SIZE];
-    VALUE del = 0, nodel = 0;
-    rb_encoding *chars_enc;
-
-    rb_str_check_dummy_enc(enc);
-    if (rb_enc_str_coderange(str) == ENC_CODERANGE_BROKEN) {
-        rb_raise(rb_eEncCompatError, "invalid byte sequence in %s", rb_enc_name(enc));
-    }
-    if (!s || s >= e) return 0;
-
-    chars_enc = rb_enc_check(str, chars);
-    tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
-    t = e;
-
-    /* remove trailing chars */
-    char *tp;
-    while ((tp = rb_enc_prev_char(s, t, e, enc)) != NULL) {
-        unsigned int c = rb_enc_codepoint(tp, e, enc);
-        if (!tr_find(c, table, del, nodel)) break;
-        t = tp;
-    }
-
-    return e - t;
-}
-
-static long
-rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
+rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc, VALUE chars)
 {
     const char *t;
 
@@ -10382,6 +10332,26 @@ rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
     }
     if (!s || s >= e) return 0;
     t = e;
+
+    /* remove trailing chars if given */
+    if (!NIL_P(chars)) {
+        char table[TR_TABLE_SIZE];
+        VALUE del = 0, nodel = 0;
+        rb_encoding *chars_enc;
+
+        StringValue(chars);
+        chars_enc = rb_enc_check(str, chars);
+        tr_setup_table(chars, table, TRUE, &del, &nodel, chars_enc);
+
+        char *tp;
+        while ((tp = rb_enc_prev_char(s, t, e, enc)) != NULL) {
+            unsigned int c = rb_enc_codepoint(tp, e, enc);
+            if (!tr_find(c, table, del, nodel)) break;
+            t = tp;
+        }
+
+        return e - t;
+    }
 
     /* remove trailing spaces or '\0's */
     if (single_byte_optimizable(str)) {
@@ -10402,8 +10372,7 @@ rstrip_offset(VALUE str, const char *s, const char *e, rb_encoding *enc)
 
 /*
  *  call-seq:
- *    rstrip! -> self or nil
- *    rstrip!(chars) -> self or nil
+ *    rstrip!(chars = nil) -> self or nil
  *
  *  Like String#rstrip, except that:
  *
@@ -10426,15 +10395,7 @@ rb_str_rstrip_bang(int argc, VALUE *argv, VALUE str)
     str_modify_keep_cr(str);
     enc = STR_ENC_GET(str);
     RSTRING_GETMEM(str, start, olen);
-
-    if (NIL_P(chars)) {
-        roffset = rstrip_offset(str, start, start+olen, enc);
-    }
-    else {
-        StringValue(chars);
-        roffset = rstrip_offset_chars(str, start, start+olen, enc, chars);
-    }
-
+    roffset = rstrip_offset(str, start, start+olen, enc, chars);
     if (roffset > 0) {
         long len = olen - roffset;
 
@@ -10448,8 +10409,7 @@ rb_str_rstrip_bang(int argc, VALUE *argv, VALUE str)
 
 /*
  *  call-seq:
- *    rstrip -> new_string
- *    rstrip(chars) -> new_string
+ *    rstrip(chars = nil) -> new_string
  *
  *  Returns a copy of +self+ with trailing whitespace removed;
  *  see {Whitespace in Strings}[rdoc-ref:String@Whitespace+in+Strings]:
@@ -10480,15 +10440,7 @@ rb_str_rstrip(int argc, VALUE *argv, VALUE str)
 
     enc = STR_ENC_GET(str);
     RSTRING_GETMEM(str, start, olen);
-
-    if (NIL_P(chars)) {
-        roffset = rstrip_offset(str, start, start+olen, enc);
-    }
-    else {
-        StringValue(chars);
-        roffset = rstrip_offset_chars(str, start, start+olen, enc, chars);
-    }
-
+    roffset = rstrip_offset(str, start, start+olen, enc, chars);
     if (roffset <= 0) return str_duplicate(rb_cString, str);
     return rb_str_subseq(str, 0, olen-roffset);
 }
@@ -10520,15 +10472,8 @@ rb_str_strip_bang(int argc, VALUE *argv, VALUE str)
     enc = STR_ENC_GET(str);
     RSTRING_GETMEM(str, start, olen);
 
-    if (NIL_P(chars)) {
-        loffset = lstrip_offset(str, start, start+olen, enc);
-        roffset = rstrip_offset(str, start+loffset, start+olen, enc);
-    }
-    else {
-        StringValue(chars);
-        loffset = lstrip_offset_chars(str, start, start+olen, enc, chars);
-        roffset = rstrip_offset_chars(str, start+loffset, start+olen, enc, chars);
-    }
+    loffset = lstrip_offset(str, start, start+olen, enc, chars);
+    roffset = rstrip_offset(str, start+loffset, start+olen, enc, chars);
 
     if (loffset > 0 || roffset > 0) {
         long len = olen-roffset;
@@ -10546,8 +10491,7 @@ rb_str_strip_bang(int argc, VALUE *argv, VALUE str)
 
 /*
  *  call-seq:
- *    strip -> new_string
- *    strip(chars) -> new_string
+ *    strip(chars = nil) -> new_string
  *
  *  Returns a copy of +self+ with leading and trailing whitespace removed;
  *  see {Whitespace in Strings}[rdoc-ref:String@Whitespace+in+Strings]:
@@ -10579,15 +10523,8 @@ rb_str_strip(int argc, VALUE *argv, VALUE str)
 
     RSTRING_GETMEM(str, start, olen);
 
-    if (NIL_P(chars)) {
-        loffset = lstrip_offset(str, start, start+olen, enc);
-        roffset = rstrip_offset(str, start+loffset, start+olen, enc);
-    }
-    else {
-        StringValue(chars);
-        loffset = lstrip_offset_chars(str, start, start+olen, enc, chars);
-        roffset = rstrip_offset_chars(str, start+loffset, start+olen, enc, chars);
-    }
+    loffset = lstrip_offset(str, start, start+olen, enc, chars);
+    roffset = rstrip_offset(str, start+loffset, start+olen, enc, chars);
 
     if (loffset <= 0 && roffset <= 0) return str_duplicate(rb_cString, str);
     return rb_str_subseq(str, loffset, olen-loffset-roffset);
