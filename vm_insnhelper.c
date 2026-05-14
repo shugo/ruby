@@ -4488,26 +4488,6 @@ find_refinement(VALUE refinements, VALUE klass)
     return rb_hash_lookup(refinements, klass);
 }
 
-PUREFUNC(static rb_control_frame_t * current_method_entry(const rb_execution_context_t *ec, rb_control_frame_t *cfp));
-static rb_control_frame_t *
-current_method_entry(const rb_execution_context_t *ec, rb_control_frame_t *cfp)
-{
-    rb_control_frame_t *top_cfp = cfp;
-
-    if (CFP_ISEQ(cfp) && ISEQ_BODY(CFP_ISEQ(cfp))->type == ISEQ_TYPE_BLOCK) {
-        const rb_iseq_t *local_iseq = ISEQ_BODY(CFP_ISEQ(cfp))->local_iseq;
-
-        do {
-            cfp = RUBY_VM_PREVIOUS_CONTROL_FRAME(cfp);
-            if (RUBY_VM_CONTROL_FRAME_STACK_OVERFLOW_P(ec, cfp)) {
-                /* TODO: orphan block */
-                return top_cfp;
-            }
-        } while (CFP_ISEQ(cfp) != local_iseq);
-    }
-    return cfp;
-}
-
 static const rb_callable_method_entry_t *
 refined_method_callable_without_refinement(const rb_callable_method_entry_t *me)
 {
@@ -4532,39 +4512,34 @@ refined_method_callable_without_refinement(const rb_callable_method_entry_t *me)
 }
 
 static const rb_callable_method_entry_t *
-search_refined_method(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling)
+search_refined_method(rb_control_frame_t *cfp, struct rb_calling_info *calling)
 {
     ID mid = vm_ci_mid(calling->cd->ci);
-    const rb_cref_t *cref = vm_get_cref(cfp->ep);
     const struct rb_callcache * const cc = calling->cc;
-    const rb_callable_method_entry_t *cme = vm_cc_cme(cc);
 
-    for (; cref; cref = CREF_NEXT(cref)) {
-        const VALUE refinement = find_refinement(CREF_REFINEMENTS(cref), vm_cc_cme(cc)->owner);
-        if (NIL_P(refinement)) continue;
+    if (vm_cc_call(cc) != vm_call_super_method) {
+        const rb_cref_t *cref = vm_get_cref(cfp->ep);
+        const rb_callable_method_entry_t *cme = vm_cc_cme(cc);
 
-        const rb_callable_method_entry_t *const ref_me =
-            rb_callable_method_entry(refinement, mid);
+        for (; cref; cref = CREF_NEXT(cref)) {
+            const VALUE refinement = find_refinement(CREF_REFINEMENTS(cref), vm_cc_cme(cc)->owner);
+            if (NIL_P(refinement)) continue;
 
-        if (ref_me) {
-            if (vm_cc_call(cc) == vm_call_super_method) {
-                const rb_control_frame_t *top_cfp = current_method_entry(ec, cfp);
-                const rb_callable_method_entry_t *top_me = rb_vm_frame_method_entry(top_cfp);
-                if (top_me && rb_method_definition_eq(ref_me->def, top_me->def)) {
-                    continue;
+            const rb_callable_method_entry_t *const ref_me =
+                rb_callable_method_entry(refinement, mid);
+
+            if (ref_me) {
+                if (cme->def->type != VM_METHOD_TYPE_REFINED ||
+                    cme->def != ref_me->def) {
+                    cme = ref_me;
+                }
+                if (ref_me->def->type != VM_METHOD_TYPE_REFINED) {
+                    return cme;
                 }
             }
-
-            if (cme->def->type != VM_METHOD_TYPE_REFINED ||
-                cme->def != ref_me->def) {
-                cme = ref_me;
+            else {
+                return NULL;
             }
-            if (ref_me->def->type != VM_METHOD_TYPE_REFINED) {
-                return cme;
-            }
-        }
-        else {
-            return NULL;
         }
     }
 
@@ -4573,7 +4548,15 @@ search_refined_method(rb_execution_context_t *ec, rb_control_frame_t *cfp, struc
     }
     else {
         VALUE klass = RCLASS_SUPER(vm_cc_cme(cc)->defined_class);
-        const rb_callable_method_entry_t *cme = klass ? rb_callable_method_entry(klass, mid) : NULL;
+        const rb_callable_method_entry_t *cme = NULL;
+        if (klass) {
+            if (vm_cc_call(cc) == vm_call_super_method) {
+                cme = rb_callable_method_entry_with_refinements(klass, mid, NULL);
+            }
+            else {
+                cme = rb_callable_method_entry(klass, mid);
+            }
+        }
         return cme;
     }
 }
@@ -4581,7 +4564,7 @@ search_refined_method(rb_execution_context_t *ec, rb_control_frame_t *cfp, struc
 static VALUE
 vm_call_refined(rb_execution_context_t *ec, rb_control_frame_t *cfp, struct rb_calling_info *calling)
 {
-    const rb_callable_method_entry_t *ref_cme = search_refined_method(ec, cfp, calling);
+    const rb_callable_method_entry_t *ref_cme = search_refined_method(cfp, calling);
 
     if (ref_cme) {
         if (calling->cd->cc) {

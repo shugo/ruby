@@ -3339,6 +3339,37 @@ class TestRefinement < Test::Unit::TestCase
     RUBY
   end
 
+  def test_super_should_not_search_refinements
+    assert_separately([], <<~RUBY)
+      bug = "[Bug #22058]"
+
+      class Base
+        def foo = "Base"
+      end
+      class Child < Base
+      end
+
+      module N
+        refine Base do
+          def foo = "N-Base"
+        end
+      end
+
+      using N
+
+      module M
+        refine Child do
+          def foo = "M-Child:" + super
+        end
+      end
+
+      using M
+
+      child = Child.new
+      assert_equal("M-Child:Base", child.foo, bug)
+    RUBY
+  end
+
   private
 
   def eval_using(mod, s)
