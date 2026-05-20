@@ -42,7 +42,7 @@ jobs:
 
       - uses: ./.github/actions/setup/directories
 
-      - uses: ruby/setup-ruby@6aaa311d81eba98ae12eaffbcb63296ace0efcde # v1.307.0
+      - uses: ruby/setup-ruby@28c65f7bd3231513f1560eb7d7ec44501e65d10b # v1.309.0
         with:
           ruby-version: '3.1'
           bundler: none
