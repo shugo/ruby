@@ -619,19 +619,30 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
                               long argc, const VALUE *mods,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
+    /* Allocate the key array up front: this (and ZALLOC below) can trigger a
+     * GC, which marks the live memo through its source iseq.  By keeping the
+     * memo consistent (argc matches mods) whenever it is reachable from
+     * body->refinement_memo, the mark never sees argc > 0 with a stale/NULL
+     * mods. */
+    VALUE *new_mods = ALLOC_N(VALUE, argc);
+    MEMCPY(new_mods, mods, VALUE, argc);
+
     struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
     struct rb_iseq_refinement_memo *memo = body->refinement_memo;
     if (memo == NULL) {
+        /* Zeroed (argc == 0, mods == NULL), so it is safe to mark before it is
+         * fully populated below. */
         memo = ZALLOC(struct rb_iseq_refinement_memo);
         body->refinement_memo = memo;
     }
     else {
         ruby_xfree(memo->mods);
     }
+    /* Plain stores from here on (no allocation, no GC): the memo transitions
+     * directly from its previous consistent state to the new one. */
     memo->base_cref = base_cref;
     memo->argc = argc;
-    memo->mods = ALLOC_N(VALUE, argc);
-    MEMCPY(memo->mods, mods, VALUE, argc);
+    memo->mods = new_mods;
     memo->copied_iseq = copied_iseq;
     memo->cref = cref;
 
