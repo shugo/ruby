@@ -398,6 +398,12 @@ rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
     return new_cref;
 }
 
+rb_cref_t *
+rb_vm_cref_dup(const rb_cref_t *cref)
+{
+    return vm_cref_dup(cref);
+}
+
 static rb_cref_t *
 vm_cref_new_toplevel(rb_execution_context_t *ec)
 {
@@ -1354,8 +1360,38 @@ rb_proc_dup(VALUE self)
         break;
     }
 
+    if (src->cref) {
+        rb_proc_t *dst;
+        GetProcPtr(procval, dst);
+        RB_OBJ_WRITE(procval, &dst->cref, src->cref);
+    }
+
     if (RB_OBJ_SHAREABLE_P(self)) RB_OBJ_SET_SHAREABLE(procval);
     RB_GC_GUARD(self); /* for: body = rb_proc_dup(body) */
+    return procval;
+}
+
+/* Build a new Proc that runs `iseq` (a recursive copy of the original block
+ * iseq) sharing `self`'s receiver and environment, but carrying `cref` as its
+ * refinement cref.  The cref is injected into the frame at every proc-invocation
+ * path so refinements take effect while the closure environment stays shared.
+ * Used by Proc#dup_with_refinements.  Never marked shareable because the cref
+ * may reference non-shareable refinements. */
+VALUE
+rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref)
+{
+    rb_proc_t *src, *dst;
+    GetProcPtr(self, src);
+    VM_ASSERT(vm_block_type(&src->block) == block_type_iseq);
+
+    struct rb_block block = src->block;
+    block.as.captured.code.iseq = iseq;
+
+    VALUE procval = proc_create(rb_obj_class(self), &block, src->is_from_method, src->is_lambda);
+    GetProcPtr(procval, dst);
+    RB_OBJ_WRITE(procval, &dst->cref, cref);
+
+    RB_GC_GUARD(self);
     return procval;
 }
 
@@ -1841,11 +1877,17 @@ invoke_block_from_c_bh(rb_execution_context_t *ec, VALUE block_handler,
         return vm_yield_with_symbol(ec, VM_BH_TO_SYMBOL(block_handler),
                                     argc, argv, kw_splat, passed_block_handler);
       case block_handler_type_proc:
-        if (force_blockarg == FALSE) {
-            is_lambda = block_proc_is_lambda(VM_BH_TO_PROC(block_handler));
+        {
+            VALUE proc = VM_BH_TO_PROC(block_handler);
+            rb_proc_t *po;
+            GetProcPtr(proc, po);
+            if (po->cref) cref = po->cref; /* carry refinement cref into the block frame */
+            if (force_blockarg == FALSE) {
+                is_lambda = block_proc_is_lambda(proc);
+            }
+            block_handler = vm_proc_to_block_handler(proc);
+            goto again;
         }
-        block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
-        goto again;
     }
     VM_UNREACHABLE(invoke_block_from_c_splattable);
     return Qundef;
@@ -1909,7 +1951,7 @@ invoke_block_from_c_proc(rb_execution_context_t *ec, const rb_proc_t *proc,
   again:
     switch (vm_block_type(block)) {
       case block_type_iseq:
-        return invoke_iseq_block_from_c(ec, &block->as.captured, self, argc, argv, kw_splat, passed_block_handler, NULL, is_lambda, me);
+        return invoke_iseq_block_from_c(ec, &block->as.captured, self, argc, argv, kw_splat, passed_block_handler, proc->cref, is_lambda, me);
       case block_type_ifunc:
         if (kw_splat == 1) {
             VALUE keyword_hash = argv[argc-1];
