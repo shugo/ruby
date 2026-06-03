@@ -2216,6 +2216,7 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
     const VALUE *ep = NULL;
     rb_cref_t *cref;
     int is_lambda = FALSE;
+    const rb_cref_t *proc_cref = NULL;
 
     if (block_handler != VM_BLOCK_HANDLER_NONE) {
       again:
@@ -2232,6 +2233,11 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
             break;
           case block_handler_type_proc:
             is_lambda = rb_proc_lambda_p(block_handler) != Qfalse;
+            {
+                rb_proc_t *po;
+                GetProcPtr(VM_BH_TO_PROC(block_handler), po);
+                proc_cref = po->cref; /* Proc#dup_with_refinements refinement cref, if any */
+            }
             block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
             goto again;
           case block_handler_type_symbol:
@@ -2248,6 +2254,13 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
 
     VM_ASSERT(singleton || RB_TYPE_P(self, T_MODULE) || RB_TYPE_P(self, T_CLASS));
     cref = vm_cref_push(ec, self, ep, TRUE, singleton);
+
+    /* Keep the block's refinements active inside instance_eval/instance_exec etc.
+     * when the block came from Proc#dup_with_refinements (its cref is carried on
+     * the proc, not in the captured environment that vm_cref_push reads). */
+    if (proc_cref && !NIL_P(CREF_REFINEMENTS(proc_cref))) {
+        CREF_REFINEMENTS_SET(cref, CREF_REFINEMENTS(proc_cref));
+    }
 
     return vm_yield_with_cref(ec, argc, argv, kw_splat, cref, is_lambda);
 }

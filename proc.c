@@ -82,6 +82,9 @@ proc_mark_and_move(void *ptr)
 {
     rb_proc_t *proc = ptr;
     block_mark_and_move((struct rb_block *)&proc->block);
+    if (proc->cref) {
+        rb_gc_mark_and_move((VALUE *)&proc->cref);
+    }
 }
 
 typedef struct {
@@ -138,6 +141,78 @@ proc_dup(VALUE self)
 {
     VALUE procval = rb_proc_dup(self);
     return rb_obj_dup_setup(self, procval);
+}
+
+rb_cref_t *rb_vm_get_cref(const VALUE *ep);
+VALUE rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref);
+const rb_iseq_t *rb_iseq_dup_with_independent_caches(const rb_iseq_t *iseq);
+
+/*
+ * call-seq:
+ *   prc.dup_with_refinements(mod, ...) -> a_proc
+ *
+ * Returns a new Proc that behaves like the receiver but with the refinements
+ * activated by the given modules in effect inside its body.  The receiver is
+ * left unchanged.
+ *
+ * The block's instruction sequences are copied recursively so that the new
+ * Proc resolves methods independently of the original.  Because this copy is
+ * relatively expensive, callers that invoke the result repeatedly should cache
+ * it.
+ *
+ *   module StringRefinement
+ *     refine String do
+ *       def shout = upcase + "!"
+ *     end
+ *   end
+ *
+ *   original = ->(s) { s.shout }
+ *   refined = original.dup_with_refinements(StringRefinement)
+ *   refined.call("hi")     #=> "HI!"
+ *   original.call("hi")    #=> NoMethodError
+ *
+ * Only Procs created from a Ruby block (an instruction sequence) are
+ * supported; calling this on a Proc backed by a C function, a Symbol, or a
+ * method raises ArgumentError.
+ */
+static VALUE
+proc_dup_with_refinements(int argc, VALUE *argv, VALUE self)
+{
+    rb_proc_t *src;
+    GetProcPtr(self, src);
+
+    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+
+    if (vm_block_type(&src->block) != block_type_iseq) {
+        rb_raise(rb_eArgError, "can't apply refinements to a Proc without an iseq block");
+    }
+    if (src->is_from_method) {
+        /* Procs created from methods are invoked through the bmethod path, which
+         * resolves methods against the method entry rather than the proc's cref,
+         * so the refinements would silently not take effect. */
+        rb_raise(rb_eArgError, "can't apply refinements to a Proc created from a method");
+    }
+
+    for (int i = 0; i < argc; i++) {
+        Check_Type(argv[i], T_MODULE);
+    }
+
+    /* Duplicate the block's cref (keeping its current refinements) and activate
+     * the refinements of each module argument on the copy. */
+    const rb_cref_t *base_cref = rb_vm_get_cref(src->block.as.captured.ep);
+    rb_cref_t *new_cref = rb_vm_cref_dup(base_cref);
+    for (int i = 0; i < argc; i++) {
+        rb_using_module(new_cref, argv[i]);
+    }
+
+    /* Recursively copy the block's iseq (and its children) so the new Proc has
+     * its own inline method caches.  This is required for correctness: the VM
+     * caches refinement method resolution per call site assuming one iseq runs
+     * under a single lexical cref, so sharing the iseq would leak the refined
+     * methods into the original Proc. */
+    const rb_iseq_t *new_iseq = rb_iseq_dup_with_independent_caches(src->block.as.captured.code.iseq);
+
+    return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
 }
 
 /*
@@ -4658,6 +4733,7 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "arity", proc_arity, 0);
     rb_define_method(rb_cProc, "clone", proc_clone, 0);
     rb_define_method(rb_cProc, "dup", proc_dup, 0);
+    rb_define_method(rb_cProc, "dup_with_refinements", proc_dup_with_refinements, -1);
     rb_define_method(rb_cProc, "hash", proc_hash, 0);
     rb_define_method(rb_cProc, "to_s", proc_to_s, 0);
     rb_define_alias(rb_cProc, "inspect", "to_s");

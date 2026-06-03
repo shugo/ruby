@@ -481,6 +481,98 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
+  module DupWithRefinementsModule
+    refine String do
+      def shout = upcase + "!"
+    end
+    refine Integer do
+      def tripled = self * 3
+    end
+  end
+
+  def test_dup_with_refinements
+    orig = ->(s) { s.shout }
+    refined = orig.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal("HI!", refined.call("hi"))
+    # the original Proc is unaffected
+    assert_raise(NoMethodError) { orig.call("hi") }
+    # idempotent: calling repeatedly keeps using the refinement
+    assert_equal("HI!", refined.call("hi"))
+  end
+
+  def test_dup_with_refinements_nested_block
+    orig = ->(a) { a.map { |s| s.shout } }
+    refined = orig.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal(["A!", "B!"], refined.call(["a", "b"]))
+    assert_raise(NoMethodError) { orig.call(["a"]) }
+  end
+
+  def test_dup_with_refinements_multiple_modules
+    refined = ->(s, n) { "#{s.shout}#{n.tripled}" }.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal("A!6", refined.call("a", 2))
+  end
+
+  def test_dup_with_refinements_shares_environment
+    counter = 0
+    inc = -> { counter += 1 }
+    refined = inc.dup_with_refinements(DupWithRefinementsModule)
+    refined.call
+    inc.call
+    # the closure environment is shared with the original Proc
+    assert_equal(2, counter)
+  end
+
+  def test_dup_with_refinements_via_yield
+    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+    result = [].tap {|a| [1, 2].each {|i| a << refined.call("x#{i}") } }
+    assert_equal(["X1!", "X2!"], result)
+
+    forwarded = []
+    rr = ->(s) { forwarded << s.shout }.dup_with_refinements(DupWithRefinementsModule)
+    %w[p q].each(&rr)
+    assert_equal(["P!", "Q!"], forwarded)
+  end
+
+  def test_dup_with_refinements_instance_eval
+    refined = proc { self.shout }.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal("HI!", "hi".instance_eval(&refined))
+    assert_equal("HI!", "hi".instance_exec(&refined))
+    # the original Proc is still unaffected via instance_eval
+    orig = proc { self.shout }
+    assert_raise(NoMethodError) { "hi".instance_eval(&orig) }
+  end
+
+  def test_dup_with_refinements_module_eval
+    refined = proc { "ok".shout }.dup_with_refinements(DupWithRefinementsModule)
+    klass = Class.new
+    assert_equal("OK!", klass.class_eval(&refined))
+  end
+
+  def test_dup_with_refinements_preserved_by_dup
+    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal("Z!", refined.dup.call("z"))
+  end
+
+  def test_dup_with_refinements_errors
+    assert_raise(ArgumentError) { ->(s) { s }.dup_with_refinements }
+    assert_raise(TypeError) { ->(s) { s }.dup_with_refinements(42) }
+    # non-iseq Procs are not supported
+    assert_raise(ArgumentError) { :upcase.to_proc.dup_with_refinements(DupWithRefinementsModule) }
+    assert_raise(ArgumentError) { method(:p).to_proc.dup_with_refinements(DupWithRefinementsModule) }
+  end
+
+  def test_dup_with_refinements_gc
+    assert_normal_exit(<<~RUBY)
+      module M
+        refine(String) { def shout = upcase + "!" }
+      end
+      procs = 100.times.map { |i| ->(s) { s.shout } .dup_with_refinements(M) }
+      GC.start
+      GC.compact rescue nil
+      procs.each { |pr| raise "bad" unless pr.call("a") == "A!" }
+    RUBY
+  end
+
   def test_clone_subclass
     c1 = Class.new(Proc)
     assert_equal c1, c1.new{}.clone.class, '[Bug #17545]'
