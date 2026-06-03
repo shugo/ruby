@@ -5375,11 +5375,9 @@ vm_invoke_ifunc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
     return val;
 }
 
-static VALUE
-vm_proc_to_block_handler(VALUE procval)
+static inline VALUE
+vm_block_to_block_handler(const struct rb_block *block)
 {
-    const struct rb_block *block = vm_proc_block(procval);
-
     switch (vm_block_type(block)) {
       case block_type_iseq:
         return VM_BH_FROM_ISEQ_BLOCK(&block->as.captured);
@@ -5395,23 +5393,46 @@ vm_proc_to_block_handler(VALUE procval)
 }
 
 static VALUE
+vm_proc_to_block_handler(VALUE procval)
+{
+    return vm_block_to_block_handler(vm_proc_block(procval));
+}
+
+/* Rare path: an inner proc carried a refinement cref (Proc#dup_with_refinements).
+ * Kept out of line so the common proc-as-block invocation below stays small and
+ * does not inline the iseq-block frame setup. */
+NOINLINE(static VALUE
+vm_invoke_proc_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
+                               struct rb_calling_info *calling, const struct rb_callinfo *ci,
+                               bool is_lambda, VALUE block_handler, const rb_cref_t *cref));
+static VALUE
+vm_invoke_proc_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
+                               struct rb_calling_info *calling, const struct rb_callinfo *ci,
+                               bool is_lambda, VALUE block_handler, const rb_cref_t *cref)
+{
+    return vm_invoke_iseq_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler, cref);
+}
+
+static VALUE
 vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
                      struct rb_calling_info *calling, const struct rb_callinfo *ci,
                      bool is_lambda, VALUE block_handler)
 {
     const rb_cref_t *cref = NULL;
 
+    /* Fetch the proc pointer once per iteration and reuse it for is_lambda, the
+     * refinement cref, and the block-handler conversion (cref is NULL for
+     * ordinary procs). */
     while (vm_block_handler_type(block_handler) == block_handler_type_proc) {
-        VALUE proc = VM_BH_TO_PROC(block_handler);
         rb_proc_t *po;
-        GetProcPtr(proc, po);
-        cref = po->cref; /* innermost proc's refinement cref, if any */
-        is_lambda = block_proc_is_lambda(proc);
-        block_handler = vm_proc_to_block_handler(proc);
+        GetProcPtr(VM_BH_TO_PROC(block_handler), po);
+        cref = po->cref;
+        is_lambda = po->is_lambda;
+        block_handler = vm_block_to_block_handler(&po->block);
     }
 
-    if (cref && vm_block_handler_type(block_handler) == block_handler_type_iseq) {
-        return vm_invoke_iseq_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler, cref);
+    if (UNLIKELY(cref) && vm_block_handler_type(block_handler) == block_handler_type_iseq) {
+        return vm_invoke_proc_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler, cref);
     }
 
     return vm_invoke_block(ec, reg_cfp, calling, ci, is_lambda, block_handler);
