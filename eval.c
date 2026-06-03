@@ -1451,15 +1451,23 @@ using_refinement(VALUE klass, VALUE module, VALUE arg)
     return ST_CONTINUE;
 }
 
-static void
-using_module_recursive(const rb_cref_t *cref, VALUE klass)
+/*!
+ * \private
+ * Activate the refinements of \a klass (a module, or an ancestor of one during
+ * recursion) in \a cref, without flushing the global refinement method caches.
+ * rb_using_module wraps this with the flush, which is needed when \a cref is
+ * already associated with live call sites.  Proc#dup_with_refinements uses this
+ * directly because it builds a fresh cref that no call site references yet.
+ */
+void
+rb_using_module_recursive(rb_cref_t *cref, VALUE klass)
 {
     ID id_refinements;
     VALUE super, module, refinements;
 
     super = RCLASS_SUPER(klass);
     if (super) {
-        using_module_recursive(cref, super);
+        rb_using_module_recursive(cref, super);
     }
     switch (BUILTIN_TYPE(klass)) {
       case T_MODULE:
@@ -1483,14 +1491,12 @@ using_module_recursive(const rb_cref_t *cref, VALUE klass)
 
 /*!
  * \private
- * Activate the refinements of \a module in \a cref, as the top-level `using`
- * does for the current cref.  Also used by Proc#dup_with_refinements.
  */
-void
-rb_using_module(const rb_cref_t *cref, VALUE module)
+static void
+rb_using_module(rb_cref_t *cref, VALUE module)
 {
     Check_Type(module, T_MODULE);
-    using_module_recursive(cref, module);
+    rb_using_module_recursive(cref, module);
     rb_clear_all_refinement_method_cache();
 }
 
