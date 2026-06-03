@@ -1872,14 +1872,15 @@ invoke_block_from_c_bh(rb_execution_context_t *ec, VALUE block_handler,
                                     argc, argv, kw_splat, passed_block_handler);
       case block_handler_type_proc:
         {
-            VALUE proc = VM_BH_TO_PROC(block_handler);
+            /* Fetch the proc pointer once and reuse it for the refinement cref,
+             * is_lambda, and the block-handler conversion. */
             rb_proc_t *po;
-            GetProcPtr(proc, po);
+            GetProcPtr(VM_BH_TO_PROC(block_handler), po);
             if (po->cref) cref = po->cref; /* carry refinement cref into the block frame */
             if (force_blockarg == FALSE) {
-                is_lambda = block_proc_is_lambda(proc);
+                is_lambda = po->is_lambda;
             }
-            block_handler = vm_proc_to_block_handler(proc);
+            block_handler = vm_block_to_block_handler(&po->block);
             goto again;
         }
     }
