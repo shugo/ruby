@@ -552,6 +552,12 @@ struct rb_iseq_constant_body {
 
     const rb_iseq_t *mandatory_only_iseq;
 
+    /* Single-entry memo for Proc#dup_with_refinements: caches the most recent
+     * {copied iseq, cref} pair produced from this iseq for a given
+     * (base_cref, modules) key.  NULL unless this iseq has been the source of a
+     * Proc#dup_with_refinements call. */
+    struct rb_iseq_refinement_memo *refinement_memo;
+
 #if USE_YJIT || USE_ZJIT
     // Function pointer for JIT code on jit_exec()
     rb_jit_func_t jit_entry;

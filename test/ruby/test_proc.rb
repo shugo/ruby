@@ -592,6 +592,60 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
+  module DupWithRefinementsModule2
+    refine String do
+      def shout = "?"
+    end
+  end
+
+  def test_dup_with_refinements_memoized
+    orig = ->(s) { s.shout }
+    # Repeating the same (proc, modules) reuses the cached copy but stays correct.
+    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
+    # A different module set must not return the previously cached copy.
+    assert_equal("?", orig.dup_with_refinements(DupWithRefinementsModule2).call("hi"))
+    # ...and switching back is still correct.
+    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
+  end
+
+  def test_dup_with_refinements_memo_distinct_environments
+    # Procs sharing the same block iseq but capturing different closure
+    # environments hit the same memo entry (env is not part of the key), yet each
+    # result must keep its own environment.
+    factory = ->(tag) { ->(s) { "#{tag}:#{s.shout}" } }
+    p1 = factory.call("A")
+    p2 = factory.call("B")
+    r1 = p1.dup_with_refinements(DupWithRefinementsModule)
+    r2 = p2.dup_with_refinements(DupWithRefinementsModule)
+    assert_equal("A:X!", r1.call("x"))
+    assert_equal("B:Y!", r2.call("y"))
+    # the original closures still see their own captured tag too
+    assert_equal("A:X!", r1.call("x"))
+  end
+
+  def test_dup_with_refinements_memo_avoids_recopy
+    orig = ->(s) { s.shout }
+    orig.dup_with_refinements(DupWithRefinementsModule) # warm the memo
+    GC.disable
+    begin
+      before = GC.stat(:total_allocated_objects)
+      100.times { orig.dup_with_refinements(DupWithRefinementsModule) }
+      hits = GC.stat(:total_allocated_objects) - before
+
+      before = GC.stat(:total_allocated_objects)
+      100.times do |i|
+        orig.dup_with_refinements(i.even? ? DupWithRefinementsModule : DupWithRefinementsModule2)
+      end
+      misses = GC.stat(:total_allocated_objects) - before
+    ensure
+      GC.enable
+    end
+    # Memo hits must allocate far less than recomputing the iseq copy each time.
+    assert_operator(misses, :>, hits * 2,
+                    "expected memo hits (#{hits}) to allocate much less than misses (#{misses})")
+  end
+
   def test_clone_subclass
     c1 = Class.new(Proc)
     assert_equal c1, c1.new{}.clone.class, '[Bug #17545]'

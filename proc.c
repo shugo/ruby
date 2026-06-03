@@ -147,6 +147,12 @@ proc_dup(VALUE self)
 rb_cref_t *rb_vm_get_cref(const VALUE *ep);
 VALUE rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref);
 const rb_iseq_t *rb_iseq_dup_with_independent_caches(const rb_iseq_t *iseq);
+bool rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
+                                    long argc, const VALUE *mods,
+                                    const rb_iseq_t **iseq_out, const rb_cref_t **cref_out);
+void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
+                                   long argc, const VALUE *mods,
+                                   const rb_iseq_t *copied_iseq, const rb_cref_t *cref);
 
 /*
  * call-seq:
@@ -198,23 +204,38 @@ proc_dup_with_refinements(int argc, VALUE *argv, VALUE self)
         Check_Type(argv[i], T_MODULE);
     }
 
-    /* Duplicate the block's cref (keeping its current refinements) and activate
-     * the refinements of each module argument on the copy.  The cref is freshly
-     * duplicated and not referenced by any call site yet, so we use
-     * rb_using_module_recursive directly and skip the global refinement method
-     * cache flush that the top-level `using` (rb_using_module) performs. */
     const rb_cref_t *base_cref = rb_vm_get_cref(src->block.as.captured.ep);
-    rb_cref_t *new_cref = rb_vm_cref_dup(base_cref);
-    for (int i = 0; i < argc; i++) {
-        rb_using_module_recursive(new_cref, argv[i]);
-    }
+    const rb_iseq_t *src_iseq = src->block.as.captured.code.iseq;
 
-    /* Recursively copy the block's iseq (and its children) so the new Proc has
-     * its own inline method caches.  This is required for correctness: the VM
-     * caches refinement method resolution per call site assuming one iseq runs
-     * under a single lexical cref, so sharing the iseq would leak the refined
-     * methods into the original Proc. */
-    const rb_iseq_t *new_iseq = rb_iseq_dup_with_independent_caches(src->block.as.captured.code.iseq);
+    /* Reuse the most recent {copied iseq, cref} pair if this same iseq was
+     * already given the same (base_cref, modules).  Copying the iseq is
+     * expensive, and all results for one key run under the same refinement set,
+     * so sharing the copy and its warmed caches is safe.  See the memo helpers
+     * in iseq.c. */
+    const rb_iseq_t *new_iseq;
+    const rb_cref_t *new_cref;
+    if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
+        /* Duplicate the block's cref (keeping its current refinements) and
+         * activate the refinements of each module argument on the copy.  The
+         * cref is freshly duplicated and not referenced by any call site yet, so
+         * we use rb_using_module_recursive directly and skip the global
+         * refinement method cache flush that the top-level `using`
+         * (rb_using_module) performs. */
+        rb_cref_t *cref = rb_vm_cref_dup(base_cref);
+        for (int i = 0; i < argc; i++) {
+            rb_using_module_recursive(cref, argv[i]);
+        }
+
+        /* Recursively copy the block's iseq (and its children) so the new Proc
+         * has its own inline method caches.  This is required for correctness:
+         * the VM caches refinement method resolution per call site assuming one
+         * iseq runs under a single lexical cref, so sharing the iseq would leak
+         * the refined methods into the original Proc. */
+        new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
+        new_cref = cref;
+
+        rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
+    }
 
     return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
 }
