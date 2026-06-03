@@ -198,11 +198,14 @@ proc_dup_with_refinements(int argc, VALUE *argv, VALUE self)
     }
 
     /* Duplicate the block's cref (keeping its current refinements) and activate
-     * the refinements of each module argument on the copy. */
+     * the refinements of each module argument on the copy.  The cref is freshly
+     * duplicated and not referenced by any call site yet, so we use
+     * rb_using_module_recursive directly and skip the global refinement method
+     * cache flush that the top-level `using` (rb_using_module) performs. */
     const rb_cref_t *base_cref = rb_vm_get_cref(src->block.as.captured.ep);
     rb_cref_t *new_cref = rb_vm_cref_dup(base_cref);
     for (int i = 0; i < argc; i++) {
-        rb_using_module(new_cref, argv[i]);
+        rb_using_module_recursive(new_cref, argv[i]);
     }
 
     /* Recursively copy the block's iseq (and its children) so the new Proc has
