@@ -181,6 +181,8 @@ rb_iseq_local_hooks(const rb_iseq_t *iseq, rb_ractor_t *r, bool create)
     return hook_list;
 }
 
+static void iseq_refinement_memo_free(struct rb_iseq_refinement_memo *memo);
+
 void
 rb_iseq_free(const rb_iseq_t *iseq)
 {
@@ -233,6 +235,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
         compile_data_free(ISEQ_COMPILE_DATA(iseq));
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
+        iseq_refinement_memo_free(body->refinement_memo);
         SIZED_FREE(body);
     }
 
@@ -324,6 +327,7 @@ iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen)
     body->variable.coverage = Qnil;
     body->variable.pc2branchindex = Qnil;
     body->variable.original_iseq = NULL;
+    body->refinement_memo = NULL;
 
     const unsigned int iseq_size = src_body->iseq_size;
     const unsigned int is_size = ISEQ_IS_SIZE(src_body);
@@ -564,6 +568,91 @@ rb_iseq_dup_with_independent_caches(const rb_iseq_t *iseq)
     return copy;
 }
 
+/* --- Proc#dup_with_refinements: single-entry per-iseq memo ---
+ *
+ * Copying an iseq (above) is expensive, so the most recent {copied iseq, cref}
+ * pair produced from a given source iseq is memoized on the source iseq's body,
+ * keyed by (base_cref, modules).  Repeatedly calling dup_with_refinements on the
+ * same proc with the same modules then reuses the copy instead of rebuilding it.
+ * Sharing a copy is safe because all results for one key run under the same
+ * refinement set, so their inline caches resolve identically.  The memo is owned
+ * by the source iseq, so its entries live exactly as long as the source iseq. */
+
+struct rb_iseq_refinement_memo {
+    const rb_cref_t *base_cref;     /* key: captured cref of the source proc */
+    long argc;                      /* key: number of modules */
+    VALUE *mods;                    /* key: argc module objects (heap-allocated) */
+    const rb_iseq_t *copied_iseq;   /* value: copied iseq with independent caches */
+    const rb_cref_t *cref;          /* value: cref with refinements activated */
+};
+
+static bool
+iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
+                               const rb_cref_t *base_cref, long argc, const VALUE *mods)
+{
+    if (memo->base_cref != base_cref || memo->argc != argc) return false;
+    for (long i = 0; i < argc; i++) {
+        if (memo->mods[i] != mods[i]) return false;
+    }
+    return true;
+}
+
+/* On a key hit, fill *iseq_out / *cref_out and return true; otherwise false. */
+bool
+rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
+                               long argc, const VALUE *mods,
+                               const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
+{
+    const struct rb_iseq_refinement_memo *memo = ISEQ_BODY(src_iseq)->refinement_memo;
+    if (memo && iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
+        *iseq_out = memo->copied_iseq;
+        *cref_out = memo->cref;
+        return true;
+    }
+    return false;
+}
+
+/* Replace the single memo entry with the given key/value (overwriting any
+ * previous entry). */
+void
+rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
+                              long argc, const VALUE *mods,
+                              const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
+{
+    struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
+    struct rb_iseq_refinement_memo *memo = body->refinement_memo;
+    if (memo == NULL) {
+        memo = ZALLOC(struct rb_iseq_refinement_memo);
+        body->refinement_memo = memo;
+    }
+    else {
+        ruby_xfree(memo->mods);
+    }
+    memo->base_cref = base_cref;
+    memo->argc = argc;
+    memo->mods = ALLOC_N(VALUE, argc);
+    MEMCPY(memo->mods, mods, VALUE, argc);
+    memo->copied_iseq = copied_iseq;
+    memo->cref = cref;
+
+    /* src_iseq now references these objects through the memo. */
+    RB_OBJ_WRITTEN(src_iseq, Qundef, copied_iseq);
+    RB_OBJ_WRITTEN(src_iseq, Qundef, (VALUE)cref);
+    if (base_cref) RB_OBJ_WRITTEN(src_iseq, Qundef, (VALUE)base_cref);
+    for (long i = 0; i < argc; i++) {
+        if (!SPECIAL_CONST_P(mods[i])) RB_OBJ_WRITTEN(src_iseq, Qundef, mods[i]);
+    }
+}
+
+static void
+iseq_refinement_memo_free(struct rb_iseq_refinement_memo *memo)
+{
+    if (memo) {
+        ruby_xfree(memo->mods);
+        ruby_xfree(memo);
+    }
+}
+
 typedef VALUE iseq_value_itr_t(void *ctx, VALUE obj);
 
 static inline void
@@ -707,6 +796,16 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
         if (body->parent_iseq) rb_gc_mark_and_move_ptr(&body->parent_iseq);
         if (body->mandatory_only_iseq) rb_gc_mark_and_move_ptr(&body->mandatory_only_iseq);
 
+        if (body->refinement_memo) {
+            struct rb_iseq_refinement_memo *memo = body->refinement_memo;
+            if (memo->base_cref) rb_gc_mark_and_move((VALUE *)&memo->base_cref);
+            if (memo->cref) rb_gc_mark_and_move((VALUE *)&memo->cref);
+            if (memo->copied_iseq) rb_gc_mark_and_move_ptr(&memo->copied_iseq);
+            for (long i = 0; i < memo->argc; i++) {
+                rb_gc_mark_and_move(&memo->mods[i]);
+            }
+        }
+
         if (body->call_data) {
             for (unsigned int i = 0; i < body->ci_size; i++) {
                 struct rb_call_data *cds = body->call_data;
@@ -848,6 +947,11 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
         /* body->call_data */
         size += body->ci_size * sizeof(struct rb_call_data);
         // TODO: should we count imemo_callinfo?
+
+        if (body->refinement_memo) {
+            size += sizeof(struct rb_iseq_refinement_memo);
+            size += body->refinement_memo->argc * sizeof(VALUE);
+        }
     }
 
     compile_data = ISEQ_COMPILE_DATA(iseq);
