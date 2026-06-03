@@ -359,8 +359,8 @@ ref_delete_symkey(VALUE key, VALUE value, VALUE unused)
     return SYMBOL_P(key) ? ST_DELETE : ST_CONTINUE;
 }
 
-static rb_cref_t *
-vm_cref_dup(const rb_cref_t *cref)
+rb_cref_t *
+rb_vm_cref_dup(const rb_cref_t *cref)
 {
     const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
     rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
@@ -396,12 +396,6 @@ rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
     }
 
     return new_cref;
-}
-
-rb_cref_t *
-rb_vm_cref_dup(const rb_cref_t *cref)
-{
-    return vm_cref_dup(cref);
 }
 
 static rb_cref_t *
