@@ -1483,8 +1483,10 @@ using_module_recursive(const rb_cref_t *cref, VALUE klass)
 
 /*!
  * \private
+ * Activate the refinements of \a module in \a cref, as the top-level `using`
+ * does for the current cref.  Also used by Proc#dup_with_refinements.
  */
-static void
+void
 rb_using_module(const rb_cref_t *cref, VALUE module)
 {
     Check_Type(module, T_MODULE);

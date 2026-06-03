@@ -1304,6 +1304,7 @@ extern const rb_data_type_t ruby_proc_data_type;
 
 typedef struct {
     const struct rb_block block;
+    const rb_cref_t *cref;              /* cref with refinements; NULL for ordinary procs */
     unsigned int is_from_method: 1;	/* bool */
     unsigned int is_lambda: 1;		/* bool */
     unsigned int is_isolated: 1;        /* bool */
