@@ -607,6 +607,23 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
+  def test_dup_with_refinements_iseq_to_binary
+    # The memo shares a body slot with mandatory_only_iseq (discriminated by
+    # iseq type); a block iseq that carries a memo must still serialize cleanly
+    # (the memo is transient and dumped as absent).
+    assert_separately([], <<~'RUBY')
+      module M
+        refine(String) { def shout = upcase + "!" }
+      end
+      src = 'x = ->(s) { s.shout }; x.dup_with_refinements(M).call("hi")'
+      iseq = RubyVM::InstructionSequence.compile(src)
+      eval(src) # runs dup_with_refinements, setting the memo on the block iseq
+      bin = iseq.to_binary
+      loaded = RubyVM::InstructionSequence.load_from_binary(bin)
+      assert_equal("HI!", loaded.eval)
+    RUBY
+  end
+
   module DupWithRefinementsModule2
     refine String do
       def shout = "?"
