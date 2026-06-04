@@ -1100,7 +1100,7 @@ rb_method_definition_set(const rb_method_entry_t *me, rb_method_definition_t *de
                     METHOD_ENTRY_BASIC_SET((rb_method_entry_t *)me, TRUE);
                 }
 
-                if (ISEQ_BODY(iseq)->mandatory_only_iseq) def->iseq_overload = 1;
+                if (ISEQ_BODY(iseq)->opt.mandatory_only_iseq) def->iseq_overload = 1;
 
                 if (0) vm_cref_dump("rb_method_definition_create", cref);
 
@@ -1663,7 +1663,7 @@ get_overloaded_cme(const rb_callable_method_entry_t *cme)
                                                       false);
 
         RB_OBJ_WRITE(me, &def->body.iseq.cref, cme->def->body.iseq.cref);
-        RB_OBJ_WRITE(me, &def->body.iseq.iseqptr, ISEQ_BODY(cme->def->body.iseq.iseqptr)->mandatory_only_iseq);
+        RB_OBJ_WRITE(me, &def->body.iseq.iseqptr, ISEQ_BODY(cme->def->body.iseq.iseqptr)->opt.mandatory_only_iseq);
 
         ASSERT_vm_locking();
         st_insert(overloaded_cme_table(), (st_data_t)cme, (st_data_t)me);

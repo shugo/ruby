@@ -9387,7 +9387,7 @@ compile_builtin_mandatory_only_method(rb_iseq_t *iseq, const NODE *node, const N
                            nd_line(line_node), NULL, 0,
                            ISEQ_TYPE_METHOD, ISEQ_COMPILE_DATA(iseq)->option,
                            ISEQ_BODY(iseq)->variable.script_lines);
-    RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->mandatory_only_iseq, (VALUE)mandatory_only_iseq);
+    RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->opt.mandatory_only_iseq, (VALUE)mandatory_only_iseq);
 
     ALLOCV_END(idtmp);
     return COMPILE_OK;
@@ -13680,7 +13680,7 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     /* For block iseqs this slot holds the (transient, non-serialized)
      * Proc#dup_with_refinements memo rather than a mandatory_only_iseq, so dump
      * it as absent. */
-    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : ISEQ_BODY(iseq)->mandatory_only_iseq);
+    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : ISEQ_BODY(iseq)->opt.mandatory_only_iseq);
     const ibf_offset_t ci_entries_offset =  ibf_dump_ci_entries(dump, iseq);
     const ibf_offset_t outer_variables_offset = ibf_dump_outer_variables(dump, iseq);
 
@@ -13983,7 +13983,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
 
     RB_OBJ_WRITE(iseq, &load_body->parent_iseq, parent_iseq);
     RB_OBJ_WRITE(iseq, &load_body->local_iseq, local_iseq);
-    RB_OBJ_WRITE(iseq, &load_body->mandatory_only_iseq, mandatory_only_iseq);
+    RB_OBJ_WRITE(iseq, &load_body->opt.mandatory_only_iseq, mandatory_only_iseq);
 
     // This must be done after the local table is loaded.
     if (load_body->param.keyword != NULL) {
