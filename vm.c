@@ -453,7 +453,7 @@ static VALUE vm_make_env_object(const rb_execution_context_t *ec, rb_control_fra
 static VALUE vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
                                   int argc, const VALUE *argv, int kw_splat, VALUE block_handler,
                                   const rb_callable_method_entry_t *me);
-static VALUE vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self, int argc, const VALUE *argv, int kw_splat, VALUE block_handler);
+static VALUE vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self, int argc, const VALUE *argv, int kw_splat, VALUE block_handler, const rb_cref_t *cref);
 
 #if USE_YJIT
 // Counter to serve as a proxy for execution time, total number of calls
@@ -1354,10 +1354,8 @@ rb_proc_dup(VALUE self)
         break;
     }
 
-    if (src->cref) {
-        rb_proc_t *dst;
-        GetProcPtr(procval, dst);
-        RB_OBJ_WRITE(procval, &dst->cref, src->cref);
+    if (src->has_refinements) {
+        rb_proc_set_refinements_cref(procval, rb_proc_refinements_cref(self));
     }
 
     if (RB_OBJ_SHAREABLE_P(self)) RB_OBJ_SET_SHAREABLE(procval);
@@ -1374,7 +1372,7 @@ rb_proc_dup(VALUE self)
 VALUE
 rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref)
 {
-    rb_proc_t *src, *dst;
+    rb_proc_t *src;
     GetProcPtr(self, src);
     VM_ASSERT(vm_block_type(&src->block) == block_type_iseq);
 
@@ -1382,8 +1380,7 @@ rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_
     block.as.captured.code.iseq = iseq;
 
     VALUE procval = proc_create(rb_obj_class(self), &block, src->is_from_method, src->is_lambda);
-    GetProcPtr(procval, dst);
-    RB_OBJ_WRITE(procval, &dst->cref, cref);
+    rb_proc_set_refinements_cref(procval, cref);
 
     RB_GC_GUARD(self);
     return procval;
@@ -1874,9 +1871,10 @@ invoke_block_from_c_bh(rb_execution_context_t *ec, VALUE block_handler,
         {
             /* Fetch the proc pointer once and reuse it for the refinement cref,
              * is_lambda, and the block-handler conversion. */
+            VALUE procval = VM_BH_TO_PROC(block_handler);
             rb_proc_t *po;
-            GetProcPtr(VM_BH_TO_PROC(block_handler), po);
-            if (po->cref) cref = po->cref; /* carry refinement cref into the block frame */
+            GetProcPtr(procval, po);
+            if (po->has_refinements) cref = rb_proc_refinements_cref(procval); /* into the block frame */
             if (force_blockarg == FALSE) {
                 is_lambda = po->is_lambda;
             }
@@ -1933,12 +1931,14 @@ ALWAYS_INLINE(static VALUE
               invoke_block_from_c_proc(rb_execution_context_t *ec, const rb_proc_t *proc,
                                        VALUE self, int argc, const VALUE *argv,
                                        int kw_splat, VALUE passed_block_handler, int is_lambda,
+                                       const rb_cref_t *cref,
                                        const rb_callable_method_entry_t *me));
 
 static inline VALUE
 invoke_block_from_c_proc(rb_execution_context_t *ec, const rb_proc_t *proc,
                          VALUE self, int argc, const VALUE *argv,
                          int kw_splat, VALUE passed_block_handler, int is_lambda,
+                         const rb_cref_t *cref,
                          const rb_callable_method_entry_t *me)
 {
     const struct rb_block *block = &proc->block;
@@ -1946,7 +1946,7 @@ invoke_block_from_c_proc(rb_execution_context_t *ec, const rb_proc_t *proc,
   again:
     switch (vm_block_type(block)) {
       case block_type_iseq:
-        return invoke_iseq_block_from_c(ec, &block->as.captured, self, argc, argv, kw_splat, passed_block_handler, proc->cref, is_lambda, me);
+        return invoke_iseq_block_from_c(ec, &block->as.captured, self, argc, argv, kw_splat, passed_block_handler, cref, is_lambda, me);
       case block_type_ifunc:
         if (kw_splat == 1) {
             VALUE keyword_hash = argv[argc-1];
@@ -1974,21 +1974,27 @@ invoke_block_from_c_proc(rb_execution_context_t *ec, const rb_proc_t *proc,
 
 static VALUE
 vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
-               int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler)
+               int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler,
+               const rb_cref_t *cref)
 {
-    return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler, proc->is_lambda, NULL);
+    return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler, proc->is_lambda, cref, NULL);
 }
 
 static VALUE
 vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
                      int argc, const VALUE *argv, int kw_splat, VALUE block_handler, const rb_callable_method_entry_t *me)
 {
-    return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, block_handler, TRUE, me);
+    /* bmethod procs are invoked against the method entry, not the proc's cref,
+     * and dup_with_refinements rejects them, so there is never a cref here. */
+    return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, block_handler, TRUE, NULL, me);
 }
 
+/* `cref` carries a Proc#dup_with_refinements refinement cref (or NULL); callers
+ * that have the proc VALUE compute it via rb_proc_refinements_cref. */
 VALUE
 rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc,
-                  int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler)
+                  int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler,
+                  const rb_cref_t *cref)
 {
     VALUE self = vm_block_self(&proc->block);
     vm_block_handler_verify(passed_block_handler);
@@ -1997,13 +2003,14 @@ rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc,
         return vm_invoke_bmethod(ec, proc, self, argc, argv, kw_splat, passed_block_handler, NULL);
     }
     else {
-        return vm_invoke_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler);
+        return vm_invoke_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler, cref);
     }
 }
 
 VALUE
 rb_vm_invoke_proc_with_self(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
-                            int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler)
+                            int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler,
+                            const rb_cref_t *cref)
 {
     vm_block_handler_verify(passed_block_handler);
 
@@ -2011,7 +2018,7 @@ rb_vm_invoke_proc_with_self(rb_execution_context_t *ec, rb_proc_t *proc, VALUE s
         return vm_invoke_bmethod(ec, proc, self, argc, argv, kw_splat, passed_block_handler, NULL);
     }
     else {
-        return vm_invoke_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler);
+        return vm_invoke_proc(ec, proc, self, argc, argv, kw_splat, passed_block_handler, cref);
     }
 }
 

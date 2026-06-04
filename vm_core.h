@@ -1319,11 +1319,21 @@ extern const rb_data_type_t ruby_proc_data_type;
 
 typedef struct {
     const struct rb_block block;
-    const rb_cref_t *cref;              /* cref with refinements; NULL for ordinary procs */
     unsigned int is_from_method: 1;	/* bool */
     unsigned int is_lambda: 1;		/* bool */
     unsigned int is_isolated: 1;        /* bool */
+    /* Set when the proc carries a Proc#dup_with_refinements refinement cref.
+     * The cref itself is stored in a hidden instance variable on the proc
+     * object (see proc.c) rather than here, to avoid growing rb_proc_t for the
+     * common case; this bit gates the lookup. */
+    unsigned int has_refinements: 1;    /* bool */
 } rb_proc_t;
+
+/* Proc#dup_with_refinements: the refinement cref lives in a hidden ivar on the
+ * proc object, gated by rb_proc_t::has_refinements.  rb_proc_refinements_cref
+ * assumes the bit is set (callers check it on the fast path). */
+const rb_cref_t *rb_proc_refinements_cref(VALUE procval);
+void rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref);
 
 RUBY_SYMBOL_EXPORT_BEGIN
 VALUE rb_proc_isolate(VALUE self);
@@ -1980,7 +1990,7 @@ void rb_iseq_pathobj_set(const rb_iseq_t *iseq, VALUE path, VALUE realpath);
 int rb_ec_frame_method_id_and_class(const rb_execution_context_t *ec, ID *idp, ID *called_idp, VALUE *klassp);
 void rb_ec_setup_exception(const rb_execution_context_t *ec, VALUE mesg, VALUE cause);
 
-VALUE rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, int argc, const VALUE *argv, int kw_splat, VALUE block_handler);
+VALUE rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc, int argc, const VALUE *argv, int kw_splat, VALUE block_handler, const rb_cref_t *cref);
 
 VALUE rb_vm_make_proc_lambda(const rb_execution_context_t *ec, const struct rb_captured_block *captured, VALUE klass, int8_t is_lambda);
 static inline VALUE

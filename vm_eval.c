@@ -290,7 +290,8 @@ vm_call0_body(rb_execution_context_t *ec, struct rb_calling_info *calling, const
             {
                 rb_proc_t *proc;
                 GetProcPtr(calling->recv, proc);
-                ret = rb_vm_invoke_proc(ec, proc, calling->argc, argv, calling->kw_splat, calling->block_handler);
+                ret = rb_vm_invoke_proc(ec, proc, calling->argc, argv, calling->kw_splat, calling->block_handler,
+                                        proc->has_refinements ? rb_proc_refinements_cref(calling->recv) : NULL);
                 goto success;
             }
           case OPTIMIZED_METHOD_TYPE_STRUCT_AREF:
@@ -2234,9 +2235,11 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
           case block_handler_type_proc:
             is_lambda = rb_proc_lambda_p(block_handler) != Qfalse;
             {
+                VALUE procval = VM_BH_TO_PROC(block_handler);
                 rb_proc_t *po;
-                GetProcPtr(VM_BH_TO_PROC(block_handler), po);
-                proc_cref = po->cref; /* Proc#dup_with_refinements refinement cref, if any */
+                GetProcPtr(procval, po);
+                /* Proc#dup_with_refinements refinement cref, if any */
+                if (po->has_refinements) proc_cref = rb_proc_refinements_cref(procval);
             }
             block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
             goto again;
