@@ -550,8 +550,8 @@ struct rb_iseq_constant_body {
 
     struct rb_id_table *outer_variables;
 
-    /* This slot holds different things for different iseq types, which never
-     * coexist, so they share storage (no per-iseq size cost):
+    /* Optimization slot shared by mutually-exclusive iseq types, so it adds no
+     * per-iseq size:
      *   - mandatory_only_iseq: for ISEQ_TYPE_METHOD, the body of the
      *     mandatory-only optimized variant (set only for methods that use the
      *     __builtin.mandatory_only? optimization).
@@ -565,7 +565,7 @@ struct rb_iseq_constant_body {
     union {
         const rb_iseq_t *mandatory_only_iseq;
         struct rb_iseq_refinement_memo *refinement_memo;
-    };
+    } opt;
 
 #if USE_YJIT || USE_ZJIT
     // Function pointer for JIT code on jit_exec()
