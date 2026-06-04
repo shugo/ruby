@@ -5427,9 +5427,10 @@ vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
      * refinement cref, and the block-handler conversion (cref is NULL for
      * ordinary procs). */
     while (vm_block_handler_type(block_handler) == block_handler_type_proc) {
+        VALUE procval = VM_BH_TO_PROC(block_handler);
         rb_proc_t *po;
-        GetProcPtr(VM_BH_TO_PROC(block_handler), po);
-        cref = po->cref;
+        GetProcPtr(procval, po);
+        cref = po->has_refinements ? rb_proc_refinements_cref(procval) : NULL;
         is_lambda = po->is_lambda;
         block_handler = vm_block_to_block_handler(&po->block);
     }

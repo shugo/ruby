@@ -78,14 +78,30 @@ block_mark_and_move(struct rb_block *block)
     }
 }
 
+/* Hidden (Ruby-invisible) instance-variable id holding a refinement proc's
+ * cref; see Proc#dup_with_refinements. */
+static ID id_refinements_cref;
+
 static void
 proc_mark_and_move(void *ptr)
 {
     rb_proc_t *proc = ptr;
     block_mark_and_move((struct rb_block *)&proc->block);
-    if (proc->cref) {
-        rb_gc_mark_and_move((VALUE *)&proc->cref);
-    }
+}
+
+const rb_cref_t *
+rb_proc_refinements_cref(VALUE procval)
+{
+    return (const rb_cref_t *)rb_ivar_get(procval, id_refinements_cref);
+}
+
+void
+rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref)
+{
+    rb_proc_t *proc;
+    GetProcPtr(procval, proc);
+    proc->has_refinements = 1;
+    rb_ivar_set(procval, id_refinements_cref, (VALUE)cref);
 }
 
 typedef struct {
@@ -1252,7 +1268,8 @@ rb_proc_call_kw(VALUE self, VALUE args, int kw_splat)
     VALUE *argv = RARRAY_PTR(args);
     GetProcPtr(self, proc);
     vret = rb_vm_invoke_proc(GET_EC(), proc, argc, argv,
-                             kw_splat, VM_BLOCK_HANDLER_NONE);
+                             kw_splat, VM_BLOCK_HANDLER_NONE,
+                             proc->has_refinements ? rb_proc_refinements_cref(self) : NULL);
     RB_GC_GUARD(self);
     RB_GC_GUARD(args);
     return vret;
@@ -1277,7 +1294,8 @@ rb_proc_call_with_block_kw(VALUE self, int argc, const VALUE *argv, VALUE passed
     VALUE vret;
     rb_proc_t *proc;
     GetProcPtr(self, proc);
-    vret = rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, proc_to_block_handler(passed_procval));
+    vret = rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, proc_to_block_handler(passed_procval),
+                             proc->has_refinements ? rb_proc_refinements_cref(self) : NULL);
     RB_GC_GUARD(self);
     return vret;
 }
@@ -4745,6 +4763,7 @@ void
 Init_Proc(void)
 {
 #undef rb_intern
+    id_refinements_cref = rb_make_internal_id();
     /* Proc */
     rb_cProc = rb_define_class("Proc", rb_cObject);
     rb_undef_alloc_func(rb_cProc);

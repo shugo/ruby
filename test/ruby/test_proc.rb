@@ -552,6 +552,16 @@ class TestProc < Test::Unit::TestCase
     assert_equal(["P!", "Q!"], forwarded)
   end
 
+  def test_dup_with_refinements_via_c_call_paths
+    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+    # These reach the proc via the C invocation path (rb_vm_invoke_proc) rather
+    # than the optimized opt_call, so the refinement cref must be carried there.
+    assert_equal("A!", refined.send(:call, "a"))
+    assert_equal("B!", refined.method(:call).call("b"))
+    assert_equal("C!", Fiber.new(&refined).resume("c"))
+    assert_equal("D!", Thread.new("d", &refined).value)
+  end
+
   def test_dup_with_refinements_instance_eval
     refined = proc { self.shout }.dup_with_refinements(DupWithRefinementsModule)
     assert_equal("HI!", "hi".instance_eval(&refined))

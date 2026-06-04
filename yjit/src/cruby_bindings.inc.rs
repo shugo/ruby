@@ -529,7 +529,6 @@ pub type rb_control_frame_t = rb_control_frame_struct;
 #[repr(C)]
 pub struct rb_proc_t {
     pub block: rb_block,
-    pub cref: *const rb_cref_t,
     pub _bitfield_align_1: [u8; 0],
     pub _bitfield_1: __BindgenBitfieldUnit<[u8; 1usize]>,
     pub __bindgen_padding_0: [u8; 7usize],
@@ -569,10 +568,22 @@ impl rb_proc_t {
         }
     }
     #[inline]
+    pub fn has_refinements(&self) -> ::std::os::raw::c_uint {
+        unsafe { ::std::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u32) }
+    }
+    #[inline]
+    pub fn set_has_refinements(&mut self, val: ::std::os::raw::c_uint) {
+        unsafe {
+            let val: u32 = ::std::mem::transmute(val);
+            self._bitfield_1.set(3usize, 1u8, val as u64)
+        }
+    }
+    #[inline]
     pub fn new_bitfield_1(
         is_from_method: ::std::os::raw::c_uint,
         is_lambda: ::std::os::raw::c_uint,
         is_isolated: ::std::os::raw::c_uint,
+        has_refinements: ::std::os::raw::c_uint,
     ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
         let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
         __bindgen_bitfield_unit.set(0usize, 1u8, {
@@ -586,6 +597,10 @@ impl rb_proc_t {
         __bindgen_bitfield_unit.set(2usize, 1u8, {
             let is_isolated: u32 = unsafe { ::std::mem::transmute(is_isolated) };
             is_isolated as u64
+        });
+        __bindgen_bitfield_unit.set(3usize, 1u8, {
+            let has_refinements: u32 = unsafe { ::std::mem::transmute(has_refinements) };
+            has_refinements as u64
         });
         __bindgen_bitfield_unit
     }
