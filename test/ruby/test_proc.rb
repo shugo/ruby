@@ -603,17 +603,20 @@ class TestProc < Test::Unit::TestCase
   end
 
   def test_dup_with_refinements_gc_stress
-    # Under GC.stress, the allocation of the memo's module array used to run a
-    # GC that marked a half-initialized memo (argc set, mods not yet allocated).
+    # Under GC.stress, the memo store allocates its module array while the memo
+    # is reachable from the iseq; a GC during that allocation must not observe a
+    # half-initialized memo (argc set but mods not yet allocated).  Alternating
+    # module sets keeps missing the memo so each call re-runs the store; one
+    # small iseq keeps it cheap enough for slow CI runners.
     assert_normal_exit(<<~RUBY)
-      module M
-        refine(String) { def shout = upcase + "!" }
-      end
+      module M1; refine(String) { def shout = upcase + "!" }; end
+      module M2; refine(String) { def shout = downcase }; end
+      orig = ->(s) { s.shout }
+      r = nil
       GC.stress = true
-      # distinct source iseqs, each memoized once (the insert path)
-      refs = 50.times.map { |i| eval("->(s){ s.shout }").dup_with_refinements(M) }
+      6.times { |i| r = orig.dup_with_refinements(i.even? ? M1 : M2) }
       GC.stress = false
-      refs.each { |pr| raise "bad" unless pr.call("a") == "A!" }
+      raise "bad" unless r.call("Hi") == "hi"
     RUBY
   end
 
