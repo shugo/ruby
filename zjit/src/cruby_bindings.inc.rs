@@ -1251,6 +1251,12 @@ pub union rb_iseq_constant_body__bindgen_ty_2 {
     pub single: iseq_bits_t,
 }
 #[repr(C)]
+#[derive(Copy, Clone)]
+pub union rb_iseq_constant_body__bindgen_ty_3 {
+    pub mandatory_only_iseq: *const rb_iseq_t,
+    pub refinement_memo: *mut rb_iseq_refinement_memo,
+}
+#[repr(C)]
 pub struct rb_iseq_struct {
     pub flags: VALUE,
     pub wrapper: VALUE,
@@ -1988,6 +1994,11 @@ pub type rb_iseq_param_keyword_struct =
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct succ_index_table {
+    pub _address: u8,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct rb_iseq_refinement_memo {
     pub _address: u8,
 }
 unsafe extern "C" {
