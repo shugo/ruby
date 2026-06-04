@@ -3646,7 +3646,7 @@ pm_compile_builtin_mandatory_only_method(rb_iseq_t *iseq, pm_scope_node_t *scope
         ISEQ_TYPE_METHOD,
         ISEQ_COMPILE_DATA(iseq)->option
     );
-    RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->mandatory_only_iseq, (VALUE)mandatory_only_iseq);
+    RB_OBJ_WRITE(iseq, &ISEQ_BODY(iseq)->opt.mandatory_only_iseq, (VALUE)mandatory_only_iseq);
 
     pm_scope_node_destroy(&next_scope_node);
     return COMPILE_OK;

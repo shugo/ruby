@@ -237,7 +237,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
         /* refinement_memo shares a slot with mandatory_only_iseq (a GC object,
          * not owned here); only block iseqs hold a memo to free. */
-        if (body->type == ISEQ_TYPE_BLOCK) iseq_refinement_memo_free(body->refinement_memo);
+        if (body->type == ISEQ_TYPE_BLOCK) iseq_refinement_memo_free(body->opt.refinement_memo);
         SIZED_FREE(body);
     }
 
@@ -323,7 +323,7 @@ iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen)
     body->variable.coverage = Qnil;
     body->variable.pc2branchindex = Qnil;
     body->variable.original_iseq = NULL;
-    body->refinement_memo = NULL;
+    body->opt.refinement_memo = NULL;
 
     const unsigned int iseq_size = src_body->iseq_size;
     const unsigned int is_size = ISEQ_IS_SIZE(src_body);
@@ -602,7 +602,7 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_
                                long argc, const VALUE *mods,
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
-    const struct rb_iseq_refinement_memo *memo = ISEQ_BODY(src_iseq)->refinement_memo;
+    const struct rb_iseq_refinement_memo *memo = ISEQ_BODY(src_iseq)->opt.refinement_memo;
     if (memo && iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
         *iseq_out = memo->copied_iseq;
         *cref_out = memo->cref;
@@ -621,7 +621,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
     /* Allocate the key array up front: this (and ZALLOC below) can trigger a
      * GC, which marks the live memo through its source iseq.  By keeping the
      * memo consistent (argc matches mods) whenever it is reachable from
-     * body->refinement_memo, the mark never sees argc > 0 with a stale/NULL
+     * body->opt.refinement_memo, the mark never sees argc > 0 with a stale/NULL
      * mods. */
     VALUE *new_mods = ALLOC_N(VALUE, argc);
     MEMCPY(new_mods, mods, VALUE, argc);
@@ -630,12 +630,12 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
     /* The memo shares storage with mandatory_only_iseq, discriminated by the
      * iseq type; dup_with_refinements sources are always block iseqs. */
     VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
-    struct rb_iseq_refinement_memo *memo = body->refinement_memo;
+    struct rb_iseq_refinement_memo *memo = body->opt.refinement_memo;
     if (memo == NULL) {
         /* Zeroed (argc == 0, mods == NULL), so it is safe to mark before it is
          * fully populated below. */
         memo = ZALLOC(struct rb_iseq_refinement_memo);
-        body->refinement_memo = memo;
+        body->opt.refinement_memo = memo;
     }
     else {
         ruby_xfree(memo->mods);
@@ -811,8 +811,8 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
         /* mandatory_only_iseq and refinement_memo share a slot (see vm_core.h);
          * the iseq type selects which one is live. */
         if (body->type == ISEQ_TYPE_BLOCK) {
-            if (body->refinement_memo) {
-                struct rb_iseq_refinement_memo *memo = body->refinement_memo;
+            if (body->opt.refinement_memo) {
+                struct rb_iseq_refinement_memo *memo = body->opt.refinement_memo;
                 if (memo->base_cref) rb_gc_mark_and_move((VALUE *)&memo->base_cref);
                 if (memo->cref) rb_gc_mark_and_move((VALUE *)&memo->cref);
                 if (memo->copied_iseq) rb_gc_mark_and_move_ptr(&memo->copied_iseq);
@@ -821,8 +821,8 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
                 }
             }
         }
-        else if (body->mandatory_only_iseq) {
-            rb_gc_mark_and_move_ptr(&body->mandatory_only_iseq);
+        else if (body->opt.mandatory_only_iseq) {
+            rb_gc_mark_and_move_ptr(&body->opt.mandatory_only_iseq);
         }
 
         if (body->call_data) {
@@ -969,9 +969,9 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
 
         /* refinement_memo shares a slot with mandatory_only_iseq; only block
          * iseqs hold a memo. */
-        if (body->type == ISEQ_TYPE_BLOCK && body->refinement_memo) {
+        if (body->type == ISEQ_TYPE_BLOCK && body->opt.refinement_memo) {
             size += sizeof(struct rb_iseq_refinement_memo);
-            size += body->refinement_memo->argc * sizeof(VALUE);
+            size += body->opt.refinement_memo->argc * sizeof(VALUE);
         }
     }
 
