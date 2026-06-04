@@ -13672,7 +13672,10 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     const ibf_offset_t catch_table_offset = ibf_dump_catch_table(dump, iseq);
     const int parent_iseq_index =           ibf_dump_iseq(dump, ISEQ_BODY(iseq)->parent_iseq);
     const int local_iseq_index =            ibf_dump_iseq(dump, ISEQ_BODY(iseq)->local_iseq);
-    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->mandatory_only_iseq);
+    /* For block iseqs this slot holds the (transient, non-serialized)
+     * Proc#dup_with_refinements memo rather than a mandatory_only_iseq, so dump
+     * it as absent. */
+    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : ISEQ_BODY(iseq)->mandatory_only_iseq);
     const ibf_offset_t ci_entries_offset =  ibf_dump_ci_entries(dump, iseq);
     const ibf_offset_t outer_variables_offset = ibf_dump_outer_variables(dump, iseq);
 

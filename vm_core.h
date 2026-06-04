@@ -550,13 +550,22 @@ struct rb_iseq_constant_body {
 
     struct rb_id_table *outer_variables;
 
-    const rb_iseq_t *mandatory_only_iseq;
-
-    /* Single-entry memo for Proc#dup_with_refinements: caches the most recent
-     * {copied iseq, cref} pair produced from this iseq for a given
-     * (base_cref, modules) key.  NULL unless this iseq has been the source of a
-     * Proc#dup_with_refinements call. */
-    struct rb_iseq_refinement_memo *refinement_memo;
+    /* This slot holds different things for different iseq types, which never
+     * coexist, so they share storage (no per-iseq size cost):
+     *   - mandatory_only_iseq: for ISEQ_TYPE_METHOD, the body of the
+     *     mandatory-only optimized variant (set only for methods that use the
+     *     __builtin.mandatory_only? optimization).
+     *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry
+     *     Proc#dup_with_refinements memo caching the most recent
+     *     {copied iseq, cref} pair for a given (base_cref, modules) key.  NULL
+     *     unless this block iseq has been a Proc#dup_with_refinements source.
+     * A block iseq never has a mandatory-only variant and only block iseqs are
+     * dup_with_refinements sources, so discriminate with
+     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK. */
+    union {
+        const rb_iseq_t *mandatory_only_iseq;
+        struct rb_iseq_refinement_memo *refinement_memo;
+    };
 
 #if USE_YJIT || USE_ZJIT
     // Function pointer for JIT code on jit_exec()

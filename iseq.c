@@ -235,7 +235,9 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
         compile_data_free(ISEQ_COMPILE_DATA(iseq));
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
-        iseq_refinement_memo_free(body->refinement_memo);
+        /* refinement_memo shares a slot with mandatory_only_iseq (a GC object,
+         * not owned here); only block iseqs hold a memo to free. */
+        if (body->type == ISEQ_TYPE_BLOCK) iseq_refinement_memo_free(body->refinement_memo);
         SIZED_FREE(body);
     }
 
@@ -274,12 +276,6 @@ iseq_dup_outer_variable_i(ID id, VALUE val, void *data)
 }
 
 static const rb_iseq_t *iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen);
-
-static const rb_iseq_t *
-iseq_dup_child_for_refinements(const rb_iseq_t *child, st_table *seen)
-{
-    return child ? iseq_dup_for_refinements(child, seen) : NULL;
-}
 
 static const rb_iseq_t *
 iseq_map_to_copy(const rb_iseq_t *iseq, st_table *seen)
@@ -539,8 +535,11 @@ iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen)
     if (body->parent_iseq) RB_OBJ_WRITTEN(new_iseq, Qundef, body->parent_iseq);
     body->local_iseq = (rb_iseq_t *)iseq_map_to_copy(src_body->local_iseq, seen);
     if (body->local_iseq) RB_OBJ_WRITTEN(new_iseq, Qundef, body->local_iseq);
-    body->mandatory_only_iseq = iseq_dup_child_for_refinements(src_body->mandatory_only_iseq, seen);
-    if (body->mandatory_only_iseq) RB_OBJ_WRITTEN(new_iseq, Qundef, body->mandatory_only_iseq);
+    /* The mandatory_only_iseq slot is shared (union) with refinement_memo.
+     * Every iseq copied here belongs to a block's subtree (blocks and their
+     * rescue/ensure iseqs), none of which has a mandatory-only variant, so the
+     * slot is always NULL in this context; refinement_memo is reset to NULL
+     * above and the copy must not carry the source's memo. */
 
     /* shared VALUE references that need write barriers on the new iseq. */
     RB_OBJ_WRITTEN(new_iseq, Qundef, body->location.pathobj);
@@ -628,6 +627,9 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
     MEMCPY(new_mods, mods, VALUE, argc);
 
     struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
+    /* The memo shares storage with mandatory_only_iseq, discriminated by the
+     * iseq type; dup_with_refinements sources are always block iseqs. */
+    VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
     struct rb_iseq_refinement_memo *memo = body->refinement_memo;
     if (memo == NULL) {
         /* Zeroed (argc == 0, mods == NULL), so it is safe to mark before it is
@@ -805,16 +807,22 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
         rb_gc_mark_and_move(&body->location.pathobj);
         if (body->local_iseq) rb_gc_mark_and_move_ptr(&body->local_iseq);
         if (body->parent_iseq) rb_gc_mark_and_move_ptr(&body->parent_iseq);
-        if (body->mandatory_only_iseq) rb_gc_mark_and_move_ptr(&body->mandatory_only_iseq);
 
-        if (body->refinement_memo) {
-            struct rb_iseq_refinement_memo *memo = body->refinement_memo;
-            if (memo->base_cref) rb_gc_mark_and_move((VALUE *)&memo->base_cref);
-            if (memo->cref) rb_gc_mark_and_move((VALUE *)&memo->cref);
-            if (memo->copied_iseq) rb_gc_mark_and_move_ptr(&memo->copied_iseq);
-            for (long i = 0; i < memo->argc; i++) {
-                rb_gc_mark_and_move(&memo->mods[i]);
+        /* mandatory_only_iseq and refinement_memo share a slot (see vm_core.h);
+         * the iseq type selects which one is live. */
+        if (body->type == ISEQ_TYPE_BLOCK) {
+            if (body->refinement_memo) {
+                struct rb_iseq_refinement_memo *memo = body->refinement_memo;
+                if (memo->base_cref) rb_gc_mark_and_move((VALUE *)&memo->base_cref);
+                if (memo->cref) rb_gc_mark_and_move((VALUE *)&memo->cref);
+                if (memo->copied_iseq) rb_gc_mark_and_move_ptr(&memo->copied_iseq);
+                for (long i = 0; i < memo->argc; i++) {
+                    rb_gc_mark_and_move(&memo->mods[i]);
+                }
             }
+        }
+        else if (body->mandatory_only_iseq) {
+            rb_gc_mark_and_move_ptr(&body->mandatory_only_iseq);
         }
 
         if (body->call_data) {
@@ -959,7 +967,9 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
         size += body->ci_size * sizeof(struct rb_call_data);
         // TODO: should we count imemo_callinfo?
 
-        if (body->refinement_memo) {
+        /* refinement_memo shares a slot with mandatory_only_iseq; only block
+         * iseqs hold a memo. */
+        if (body->type == ISEQ_TYPE_BLOCK && body->refinement_memo) {
             size += sizeof(struct rb_iseq_refinement_memo);
             size += body->refinement_memo->argc * sizeof(VALUE);
         }
