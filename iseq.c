@@ -319,6 +319,9 @@ iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen)
     body->yjit_payload = NULL;
     body->yjit_calls_at_interv = 0;
 #endif
+#if USE_ZJIT
+    body->zjit_payload = NULL;
+#endif
     body->variable.flip_count = 0;
     body->variable.coverage = Qnil;
     body->variable.pc2branchindex = Qnil;
