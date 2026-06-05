@@ -178,11 +178,6 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  * activated by the given modules in effect inside its body.  The receiver is
  * left unchanged.
  *
- * The block's instruction sequences are copied recursively so that the new
- * Proc resolves methods independently of the original.  Because this copy is
- * relatively expensive, callers that invoke the result repeatedly should cache
- * it.
- *
  *   module StringRefinement
  *     refine String do
  *       def shout = upcase + "!"
@@ -194,9 +189,8 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  *   refined.call("hi")     #=> "HI!"
  *   original.call("hi")    #=> NoMethodError
  *
- * Only Procs created from a Ruby block (an instruction sequence) are
- * supported; calling this on a Proc backed by a C function, a Symbol, or a
- * method raises ArgumentError.
+ * Only Procs created from a Ruby block are supported; calling this on a Proc
+ * backed by a C function, a Symbol, or a method raises ArgumentError.
  */
 static VALUE
 proc_dup_with_refinements(int argc, VALUE *argv, VALUE self)
