@@ -5407,12 +5407,13 @@ vm_proc_to_block_handler(VALUE procval)
 NOINLINE(static VALUE
 vm_invoke_proc_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
                                struct rb_calling_info *calling, const struct rb_callinfo *ci,
-                               bool is_lambda, VALUE block_handler, const rb_cref_t *cref));
+                               bool is_lambda, VALUE block_handler, VALUE refined_procval));
 static VALUE
 vm_invoke_proc_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
                                struct rb_calling_info *calling, const struct rb_callinfo *ci,
-                               bool is_lambda, VALUE block_handler, const rb_cref_t *cref)
+                               bool is_lambda, VALUE block_handler, VALUE refined_procval)
 {
+    const rb_cref_t *cref = rb_proc_refinements_cref(refined_procval);
     return vm_invoke_iseq_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler, cref);
 }
 
@@ -5421,22 +5422,25 @@ vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
                      struct rb_calling_info *calling, const struct rb_callinfo *ci,
                      bool is_lambda, VALUE block_handler)
 {
-    const rb_cref_t *cref = NULL;
+    VALUE refined_procval = 0;
 
     /* Fetch the proc pointer once per iteration and reuse it for is_lambda, the
-     * refinement cref, and the block-handler conversion (cref is NULL for
-     * ordinary procs). */
+     * refinement flag, and the block-handler conversion.  Only remember which
+     * proc carried refinements; the cref itself is fetched on the rare path
+     * below, so this hot loop stays call-free and the common ordinary-proc path
+     * keeps vm_invoke_proc_block leaf/frameless (no prologue per pr.call). */
     while (vm_block_handler_type(block_handler) == block_handler_type_proc) {
         VALUE procval = VM_BH_TO_PROC(block_handler);
         rb_proc_t *po;
         GetProcPtr(procval, po);
-        cref = po->has_refinements ? rb_proc_refinements_cref(procval) : NULL;
+        if (po->has_refinements) refined_procval = procval;
         is_lambda = po->is_lambda;
         block_handler = vm_block_to_block_handler(&po->block);
     }
 
-    if (UNLIKELY(cref) && vm_block_handler_type(block_handler) == block_handler_type_iseq) {
-        return vm_invoke_proc_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler, cref);
+    if (UNLIKELY(refined_procval) && vm_block_handler_type(block_handler) == block_handler_type_iseq) {
+        return vm_invoke_proc_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler,
+                                              refined_procval);
     }
 
     return vm_invoke_block(ec, reg_cfp, calling, ci, is_lambda, block_handler);
