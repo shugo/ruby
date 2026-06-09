@@ -200,14 +200,12 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
 
-    if (vm_block_type(&src->block) != block_type_iseq) {
-        rb_raise(rb_eArgError, "can't apply refinements to a Proc without an iseq block");
-    }
-    if (src->is_from_method) {
-        /* Procs created from methods are invoked through the bmethod path, which
-         * resolves methods against the method entry rather than the proc's cref,
-         * so the refinements would silently not take effect. */
-        rb_raise(rb_eArgError, "can't apply refinements to a Proc created from a method");
+    /* Only Procs created from a Ruby block are supported.  A Proc created from a
+     * method has an iseq but is invoked through the bmethod path, which resolves
+     * methods against the method entry rather than the proc's cref, so the
+     * refinements would silently not take effect; reject it too. */
+    if (vm_block_type(&src->block) != block_type_iseq || src->is_from_method) {
+        rb_raise(rb_eArgError, "can't apply refinements to a Proc without a Ruby block");
     }
 
     for (int i = 0; i < argc; i++) {
