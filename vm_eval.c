@@ -2238,7 +2238,7 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
                 VALUE procval = VM_BH_TO_PROC(block_handler);
                 rb_proc_t *po;
                 GetProcPtr(procval, po);
-                /* Proc#dup_with_refinements refinement cref, if any */
+                /* Proc#with_refinements refinement cref, if any */
                 if (po->has_refinements) proc_cref = rb_proc_refinements_cref(procval);
             }
             block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
@@ -2259,7 +2259,7 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
     cref = vm_cref_push(ec, self, ep, TRUE, singleton);
 
     /* Keep the block's refinements active inside instance_eval/instance_exec etc.
-     * when the block came from Proc#dup_with_refinements (its cref is carried on
+     * when the block came from Proc#with_refinements (its cref is carried on
      * the proc, not in the captured environment that vm_cref_push reads). */
     if (proc_cref && !NIL_P(CREF_REFINEMENTS(proc_cref))) {
         CREF_REFINEMENTS_SET(cref, CREF_REFINEMENTS(proc_cref));

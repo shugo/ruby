@@ -244,7 +244,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
     RUBY_FREE_LEAVE("iseq");
 }
 
-/* --- Proc#dup_with_refinements: recursive iseq copy with independent caches ---
+/* --- Proc#with_refinements: recursive iseq copy with independent caches ---
  *
  * Produces a structural copy of an iseq (and, recursively, its child iseqs) that
  * shares immutable, lexically-fixed data with the original but has its own
@@ -570,11 +570,11 @@ rb_iseq_dup_with_independent_caches(const rb_iseq_t *iseq)
     return copy;
 }
 
-/* --- Proc#dup_with_refinements: single-entry per-iseq memo ---
+/* --- Proc#with_refinements: single-entry per-iseq memo ---
  *
  * Copying an iseq (above) is expensive, so the most recent {copied iseq, cref}
  * pair produced from a given source iseq is memoized on the source iseq's body,
- * keyed by (base_cref, modules).  Repeatedly calling dup_with_refinements on the
+ * keyed by (base_cref, modules).  Repeatedly calling with_refinements on the
  * same proc with the same modules then reuses the copy instead of rebuilding it.
  * Sharing a copy is safe because all results for one key run under the same
  * refinement set, so their inline caches resolve identically.  The memo is owned
@@ -631,7 +631,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
 
     struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
     /* The memo shares storage with mandatory_only_iseq, discriminated by the
-     * iseq type; dup_with_refinements sources are always block iseqs. */
+     * iseq type; with_refinements sources are always block iseqs. */
     VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
     struct rb_iseq_refinement_memo *memo = body->opt.refinement_memo;
     if (memo == NULL) {

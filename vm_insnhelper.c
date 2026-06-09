@@ -5291,7 +5291,7 @@ vm_invoke_iseq_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *r
 
     SET_SP(rsp);
 
-    /* `cref` is normally 0; Proc#dup_with_refinements supplies a refinement cref
+    /* `cref` is normally 0; Proc#with_refinements supplies a refinement cref
      * so that method calls inside the block resolve against it. */
     vm_push_frame(ec, iseq,
                   frame_flag,
@@ -5398,7 +5398,7 @@ vm_proc_to_block_handler(VALUE procval)
     return vm_block_to_block_handler(vm_proc_block(procval));
 }
 
-/* Rare path: an inner proc carried a refinement cref (Proc#dup_with_refinements).
+/* Rare path: an inner proc carried a refinement cref (Proc#with_refinements).
  * Kept out of line so the common proc-as-block invocation below stays small and
  * does not inline the iseq-block frame setup. */
 NOINLINE(static VALUE

@@ -79,7 +79,7 @@ block_mark_and_move(struct rb_block *block)
 }
 
 /* Hidden (Ruby-invisible) instance-variable id holding a refinement proc's
- * cref; see Proc#dup_with_refinements. */
+ * cref; see Proc#with_refinements. */
 static ID id_refinements_cref;
 
 static void
@@ -172,7 +172,7 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
 
 /*
  * call-seq:
- *   prc.dup_with_refinements(mod, ...) -> a_proc
+ *   prc.with_refinements(mod, ...) -> a_proc
  *
  * Returns a new Proc that behaves like the receiver but with the refinements
  * activated by the given modules in effect inside its body.  The receiver is
@@ -185,7 +185,7 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  *   end
  *
  *   original = ->(s) { s.shout }
- *   refined = original.dup_with_refinements(StringRefinement)
+ *   refined = original.with_refinements(StringRefinement)
  *   refined.call("hi")     #=> "HI!"
  *   original.call("hi")    #=> NoMethodError
  *
@@ -193,7 +193,7 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  * backed by a C function, a Symbol, or a method raises ArgumentError.
  */
 static VALUE
-proc_dup_with_refinements(int argc, VALUE *argv, VALUE self)
+proc_with_refinements(int argc, VALUE *argv, VALUE self)
 {
     rb_proc_t *src;
     GetProcPtr(self, src);
@@ -4779,7 +4779,7 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "arity", proc_arity, 0);
     rb_define_method(rb_cProc, "clone", proc_clone, 0);
     rb_define_method(rb_cProc, "dup", proc_dup, 0);
-    rb_define_method(rb_cProc, "dup_with_refinements", proc_dup_with_refinements, -1);
+    rb_define_method(rb_cProc, "with_refinements", proc_with_refinements, -1);
     rb_define_method(rb_cProc, "hash", proc_hash, 0);
     rb_define_method(rb_cProc, "to_s", proc_to_s, 0);
     rb_define_alias(rb_cProc, "inspect", "to_s");
