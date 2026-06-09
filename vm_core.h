@@ -556,11 +556,11 @@ struct rb_iseq_constant_body {
      *     mandatory-only optimized variant (set only for methods that use the
      *     __builtin.mandatory_only? optimization).
      *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry
-     *     Proc#dup_with_refinements memo caching the most recent
+     *     Proc#with_refinements memo caching the most recent
      *     {copied iseq, cref} pair for a given (base_cref, modules) key.  NULL
-     *     unless this block iseq has been a Proc#dup_with_refinements source.
+     *     unless this block iseq has been a Proc#with_refinements source.
      * A block iseq never has a mandatory-only variant and only block iseqs are
-     * dup_with_refinements sources, so discriminate with
+     * with_refinements sources, so discriminate with
      * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK. */
     union {
         const rb_iseq_t *mandatory_only_iseq;
@@ -1322,14 +1322,14 @@ typedef struct {
     unsigned int is_from_method: 1;	/* bool */
     unsigned int is_lambda: 1;		/* bool */
     unsigned int is_isolated: 1;        /* bool */
-    /* Set when the proc carries a Proc#dup_with_refinements refinement cref.
+    /* Set when the proc carries a Proc#with_refinements refinement cref.
      * The cref itself is stored in a hidden instance variable on the proc
      * object (see proc.c) rather than here, to avoid growing rb_proc_t for the
      * common case; this bit gates the lookup. */
     unsigned int has_refinements: 1;    /* bool */
 } rb_proc_t;
 
-/* Proc#dup_with_refinements: the refinement cref lives in a hidden ivar on the
+/* Proc#with_refinements: the refinement cref lives in a hidden ivar on the
  * proc object, gated by rb_proc_t::has_refinements.  rb_proc_refinements_cref
  * assumes the bit is set (callers check it on the fast path). */
 const rb_cref_t *rb_proc_refinements_cref(VALUE procval);

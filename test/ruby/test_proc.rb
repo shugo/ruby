@@ -481,7 +481,7 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
-  module DupWithRefinementsModule
+  module WithRefinementsModule
     refine String do
       def shout = upcase + "!"
     end
@@ -490,9 +490,9 @@ class TestProc < Test::Unit::TestCase
     end
   end
 
-  def test_dup_with_refinements
+  def test_with_refinements
     orig = ->(s) { s.shout }
-    refined = orig.dup_with_refinements(DupWithRefinementsModule)
+    refined = orig.with_refinements(WithRefinementsModule)
     assert_equal("HI!", refined.call("hi"))
     # the original Proc is unaffected
     assert_raise(NoMethodError) { orig.call("hi") }
@@ -500,41 +500,41 @@ class TestProc < Test::Unit::TestCase
     assert_equal("HI!", refined.call("hi"))
   end
 
-  def test_dup_with_refinements_nested_block
+  def test_with_refinements_nested_block
     orig = ->(a) { a.map { |s| s.shout } }
-    refined = orig.dup_with_refinements(DupWithRefinementsModule)
+    refined = orig.with_refinements(WithRefinementsModule)
     assert_equal(["A!", "B!"], refined.call(["a", "b"]))
     assert_raise(NoMethodError) { orig.call(["a"]) }
   end
 
-  def test_dup_with_refinements_multiple_modules
-    refined = ->(s, n) { "#{s.shout}#{n.tripled}" }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_multiple_modules
+    refined = ->(s, n) { "#{s.shout}#{n.tripled}" }.with_refinements(WithRefinementsModule)
     assert_equal("A!6", refined.call("a", 2))
   end
 
-  def test_dup_with_refinements_shares_environment
+  def test_with_refinements_shares_environment
     counter = 0
     inc = -> { counter += 1 }
-    refined = inc.dup_with_refinements(DupWithRefinementsModule)
+    refined = inc.with_refinements(WithRefinementsModule)
     refined.call
     inc.call
     # the closure environment is shared with the original Proc
     assert_equal(2, counter)
   end
 
-  def test_dup_with_refinements_via_yield
-    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_via_yield
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
     result = [].tap {|a| [1, 2].each {|i| a << refined.call("x#{i}") } }
     assert_equal(["X1!", "X2!"], result)
 
     forwarded = []
-    rr = ->(s) { forwarded << s.shout }.dup_with_refinements(DupWithRefinementsModule)
+    rr = ->(s) { forwarded << s.shout }.with_refinements(WithRefinementsModule)
     %w[p q].each(&rr)
     assert_equal(["P!", "Q!"], forwarded)
   end
 
-  def test_dup_with_refinements_via_c_call_paths
-    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_via_c_call_paths
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
     # These reach the proc via the C invocation path (rb_vm_invoke_proc) rather
     # than the optimized opt_call, so the refinement cref must be carried there.
     assert_equal("A!", refined.send(:call, "a"))
@@ -543,8 +543,8 @@ class TestProc < Test::Unit::TestCase
     assert_equal("D!", Thread.new("d", &refined).value)
   end
 
-  def test_dup_with_refinements_instance_eval
-    refined = proc { self.shout }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_instance_eval
+    refined = proc { self.shout }.with_refinements(WithRefinementsModule)
     assert_equal("HI!", "hi".instance_eval(&refined))
     assert_equal("HI!", "hi".instance_exec(&refined))
     # the original Proc is still unaffected via instance_eval
@@ -552,38 +552,38 @@ class TestProc < Test::Unit::TestCase
     assert_raise(NoMethodError) { "hi".instance_eval(&orig) }
   end
 
-  def test_dup_with_refinements_module_eval
-    refined = proc { "ok".shout }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_module_eval
+    refined = proc { "ok".shout }.with_refinements(WithRefinementsModule)
     klass = Class.new
     assert_equal("OK!", klass.class_eval(&refined))
   end
 
-  def test_dup_with_refinements_preserved_by_dup
-    refined = ->(s) { s.shout }.dup_with_refinements(DupWithRefinementsModule)
+  def test_with_refinements_preserved_by_dup
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
     assert_equal("Z!", refined.dup.call("z"))
   end
 
-  def test_dup_with_refinements_errors
-    assert_raise(ArgumentError) { ->(s) { s }.dup_with_refinements }
-    assert_raise(TypeError) { ->(s) { s }.dup_with_refinements(42) }
+  def test_with_refinements_errors
+    assert_raise(ArgumentError) { ->(s) { s }.with_refinements }
+    assert_raise(TypeError) { ->(s) { s }.with_refinements(42) }
     # non-iseq Procs are not supported
-    assert_raise(ArgumentError) { :upcase.to_proc.dup_with_refinements(DupWithRefinementsModule) }
-    assert_raise(ArgumentError) { method(:p).to_proc.dup_with_refinements(DupWithRefinementsModule) }
+    assert_raise(ArgumentError) { :upcase.to_proc.with_refinements(WithRefinementsModule) }
+    assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
   end
 
-  def test_dup_with_refinements_gc
+  def test_with_refinements_gc
     assert_normal_exit(<<~RUBY)
       module M
         refine(String) { def shout = upcase + "!" }
       end
-      procs = 100.times.map { |i| ->(s) { s.shout } .dup_with_refinements(M) }
+      procs = 100.times.map { |i| ->(s) { s.shout } .with_refinements(M) }
       GC.start
       GC.compact rescue nil
       procs.each { |pr| raise "bad" unless pr.call("a") == "A!" }
     RUBY
   end
 
-  def test_dup_with_refinements_gc_stress
+  def test_with_refinements_gc_stress
     # Under GC.stress, the memo store allocates its module array while the memo
     # is reachable from the iseq; a GC during that allocation must not observe a
     # half-initialized memo (argc set but mods not yet allocated).  Alternating
@@ -595,13 +595,13 @@ class TestProc < Test::Unit::TestCase
       orig = ->(s) { s.shout }
       r = nil
       GC.stress = true
-      6.times { |i| r = orig.dup_with_refinements(i.even? ? M1 : M2) }
+      6.times { |i| r = orig.with_refinements(i.even? ? M1 : M2) }
       GC.stress = false
       raise "bad" unless r.call("Hi") == "hi"
     RUBY
   end
 
-  def test_dup_with_refinements_iseq_to_binary
+  def test_with_refinements_iseq_to_binary
     # The memo shares a body slot with mandatory_only_iseq (discriminated by
     # iseq type); a block iseq that carries a memo must still serialize cleanly
     # (the memo is transient and dumped as absent).
@@ -609,59 +609,59 @@ class TestProc < Test::Unit::TestCase
       module M
         refine(String) { def shout = upcase + "!" }
       end
-      src = 'x = ->(s) { s.shout }; x.dup_with_refinements(M).call("hi")'
+      src = 'x = ->(s) { s.shout }; x.with_refinements(M).call("hi")'
       iseq = RubyVM::InstructionSequence.compile(src)
-      eval(src) # runs dup_with_refinements, setting the memo on the block iseq
+      eval(src) # runs with_refinements, setting the memo on the block iseq
       bin = iseq.to_binary
       loaded = RubyVM::InstructionSequence.load_from_binary(bin)
       assert_equal("HI!", loaded.eval)
     RUBY
   end
 
-  module DupWithRefinementsModule2
+  module WithRefinementsModule2
     refine String do
       def shout = "?"
     end
   end
 
-  def test_dup_with_refinements_memoized
+  def test_with_refinements_memoized
     orig = ->(s) { s.shout }
     # Repeating the same (proc, modules) reuses the cached copy but stays correct.
-    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
-    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
     # A different module set must not return the previously cached copy.
-    assert_equal("?", orig.dup_with_refinements(DupWithRefinementsModule2).call("hi"))
+    assert_equal("?", orig.with_refinements(WithRefinementsModule2).call("hi"))
     # ...and switching back is still correct.
-    assert_equal("HI!", orig.dup_with_refinements(DupWithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
   end
 
-  def test_dup_with_refinements_memo_distinct_environments
+  def test_with_refinements_memo_distinct_environments
     # Procs sharing the same block iseq but capturing different closure
     # environments hit the same memo entry (env is not part of the key), yet each
     # result must keep its own environment.
     factory = ->(tag) { ->(s) { "#{tag}:#{s.shout}" } }
     p1 = factory.call("A")
     p2 = factory.call("B")
-    r1 = p1.dup_with_refinements(DupWithRefinementsModule)
-    r2 = p2.dup_with_refinements(DupWithRefinementsModule)
+    r1 = p1.with_refinements(WithRefinementsModule)
+    r2 = p2.with_refinements(WithRefinementsModule)
     assert_equal("A:X!", r1.call("x"))
     assert_equal("B:Y!", r2.call("y"))
     # the original closures still see their own captured tag too
     assert_equal("A:X!", r1.call("x"))
   end
 
-  def test_dup_with_refinements_memo_avoids_recopy
+  def test_with_refinements_memo_avoids_recopy
     orig = ->(s) { s.shout }
-    orig.dup_with_refinements(DupWithRefinementsModule) # warm the memo
+    orig.with_refinements(WithRefinementsModule) # warm the memo
     GC.disable
     begin
       before = GC.stat(:total_allocated_objects)
-      100.times { orig.dup_with_refinements(DupWithRefinementsModule) }
+      100.times { orig.with_refinements(WithRefinementsModule) }
       hits = GC.stat(:total_allocated_objects) - before
 
       before = GC.stat(:total_allocated_objects)
       100.times do |i|
-        orig.dup_with_refinements(i.even? ? DupWithRefinementsModule : DupWithRefinementsModule2)
+        orig.with_refinements(i.even? ? WithRefinementsModule : WithRefinementsModule2)
       end
       misses = GC.stat(:total_allocated_objects) - before
     ensure
