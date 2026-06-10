@@ -2596,6 +2596,17 @@ rb_mod_define_method_with_visibility(int argc, VALUE *argv, VALUE mod, const str
         RB_GC_GUARD(body);
     }
     else {
+        rb_proc_t *body_proc;
+        GetProcPtr(body, body_proc);
+        /* A Proc#with_refinements proc resolves methods against the refinement
+         * cref carried on the proc object, but a bmethod is invoked against its
+         * method entry and never reads that cref, so the refinements would
+         * silently not take effect.  Reject it rather than define a method whose
+         * refinements are dropped. */
+        if (body_proc->has_refinements) {
+            rb_raise(rb_eArgError,
+                     "can't define a method from a Proc with refinements");
+        }
         VALUE procval = rb_proc_dup(body);
         if (vm_proc_iseq(procval) != NULL) {
             rb_proc_t *proc;
