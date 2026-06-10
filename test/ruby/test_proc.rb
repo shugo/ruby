@@ -577,6 +577,16 @@ class TestProc < Test::Unit::TestCase
     assert_equal("OK!", klass.class_eval(&refined))
   end
 
+  def test_with_refinements_instance_eval_does_not_leak_refinements
+    # instance_eval/class_eval gets its own copy of the refinements hash, so a
+    # `using` inside must not mutate the cref shared by every derived proc.
+    refined = proc { "ok".shout }.with_refinements(WithRefinementsModule)
+    Class.new.class_eval(&refined)
+    # a second proc derived from the same source iseq still sees the refinement
+    again = proc { "ok".shout }.with_refinements(WithRefinementsModule)
+    assert_equal("OK!", Class.new.class_eval(&again))
+  end
+
   def test_with_refinements_preserved_by_dup
     refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
     assert_equal("Z!", refined.dup.call("z"))
