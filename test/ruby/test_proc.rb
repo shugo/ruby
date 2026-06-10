@@ -590,6 +590,16 @@ class TestProc < Test::Unit::TestCase
     assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
   end
 
+  def test_with_refinements_rejected_by_define_method
+    # A bmethod is invoked against its method entry, not the proc's refinement
+    # cref, so defining a method from a with_refinements proc would silently drop
+    # the refinements; it is rejected instead.
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+    assert_raise(ArgumentError) { Class.new { define_method(:m, refined) } }
+    assert_raise(ArgumentError) { Class.new { define_method(:m, &refined) } }
+    assert_raise(ArgumentError) { Object.new.define_singleton_method(:m, refined) }
+  end
+
   def test_with_refinements_gc
     assert_normal_exit(<<~RUBY)
       module M
