@@ -2260,9 +2260,12 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
 
     /* Keep the block's refinements active inside instance_eval/instance_exec etc.
      * when the block came from Proc#with_refinements (its cref is carried on
-     * the proc, not in the captured environment that vm_cref_push reads). */
+     * the proc, not in the captured environment that vm_cref_push reads).
+     * Duplicate the refinements hash rather than sharing it: proc_cref is the
+     * memoized cref shared by every proc derived from this source, so the freshly
+     * pushed cref must not alias (and risk mutating) its hash. */
     if (proc_cref && !NIL_P(CREF_REFINEMENTS(proc_cref))) {
-        CREF_REFINEMENTS_SET(cref, CREF_REFINEMENTS(proc_cref));
+        CREF_REFINEMENTS_SET(cref, rb_hash_dup(CREF_REFINEMENTS(proc_cref)));
     }
 
     return vm_yield_with_cref(ec, argc, argv, kw_splat, cref, is_lambda);
