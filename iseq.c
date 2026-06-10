@@ -360,6 +360,17 @@ iseq_dup_for_refinements(const rb_iseq_t *src, st_table *seen)
         union iseq_inline_storage_entry *is = ALLOC_N(union iseq_inline_storage_entry, is_size);
         MEMCPY(is, src_body->is_entries, union iseq_inline_storage_entry, is_size);
         body->is_entries = is;
+        /* Reset ISE (once) caches to a fresh state.  The source's once may be in
+         * progress (running_thread points at a live thread) or completed; either
+         * way the copy must run its own once independently.  Carrying a stale
+         * running_thread would make the copy's first execution either re-run the
+         * body (same thread) or wait forever for a finish that never comes
+         * (other thread), since the source clears only its own entry. */
+        union iseq_inline_storage_entry *ise = is + src_body->ivc_size + src_body->icvarc_size;
+        for (unsigned int i = 0; i < src_body->ise_size; i++) {
+            ise[i].once.running_thread = NULL;
+            ise[i].once.value = 0;
+        }
         for (unsigned int i = 0; i < src_body->ic_size; i++) {
             IC ic = &ISEQ_IS_IC_ENTRY(body, i);
             ic->entry = NULL;
