@@ -191,6 +191,12 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  *
  * Only Procs created from a Ruby block are supported; calling this on a Proc
  * backed by a C function, a Symbol, or a method raises ArgumentError.
+ *
+ * Calling this method on a Proc that already has refinements applied by this
+ * method also raises ArgumentError.  To activate the refinements of multiple
+ * modules, pass them all in a single call:
+ *
+ *   refined = original.with_refinements(StringRefinement, OtherRefinement)
  */
 static VALUE
 proc_with_refinements(int argc, VALUE *argv, VALUE self)
@@ -206,6 +212,14 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
      * refinements would silently not take effect; reject it too. */
     if (vm_block_type(&src->block) != block_type_iseq || src->is_from_method) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc without a Ruby block");
+    }
+
+    /* Chaining is not allowed: combining refinement sets raises ordering and
+     * precedence questions that are better avoided (pass all modules in one
+     * call instead).  Rejecting now also keeps the option open to give chaining
+     * a meaning later without breaking compatibility. */
+    if (src->has_refinements) {
+        rb_raise(rb_eArgError, "can't apply refinements to a Proc that already has refinements");
     }
 
     for (int i = 0; i < argc; i++) {
