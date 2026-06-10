@@ -590,6 +590,18 @@ class TestProc < Test::Unit::TestCase
     assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
   end
 
+  def test_with_refinements_chain_rejected
+    # Chaining would need merge-or-replace semantics for the refinement sets;
+    # both are confusing, so a refined proc rejects further with_refinements.
+    # Multiple modules can be activated by passing them in a single call.
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+    assert_raise(ArgumentError) { refined.with_refinements(WithRefinementsModule2) }
+    # the refinement state survives dup, so the dup is rejected too
+    assert_raise(ArgumentError) { refined.dup.with_refinements(WithRefinementsModule2) }
+    # the receiver remains usable
+    assert_equal("HI!", refined.call("hi"))
+  end
+
   def test_with_refinements_rejected_by_define_method
     # A bmethod is invoked against its method entry, not the proc's refinement
     # cref, so defining a method from a with_refinements proc would silently drop
