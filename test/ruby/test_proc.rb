@@ -587,6 +587,19 @@ class TestProc < Test::Unit::TestCase
     assert_equal("OK!", Class.new.class_eval(&again))
   end
 
+  def test_with_refinements_once_regexp
+    # A /o (once) regexp literal interpolating a refined-method call must be
+    # built under the refinement, and the copy's once cache is independent of
+    # the source iseq's (which may be mid-flight or already completed).
+    refined = ->(s) { /\A#{s.shout}\z/o }.with_refinements(WithRefinementsModule)
+    r1 = refined.call("ab")
+    assert_equal('\AAB!\z', r1.source)
+    # /o caches the first regexp on the copy's own once entry
+    assert_same(r1, refined.call("zz"))
+    # the original proc has no refinement, so building the regexp raises
+    assert_raise(NoMethodError) { ->(s) { /\A#{s.shout}\z/o }.call("ab") }
+  end
+
   def test_with_refinements_preserved_by_dup
     refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
     assert_equal("Z!", refined.dup.call("z"))
