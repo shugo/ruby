@@ -590,6 +590,19 @@ class TestProc < Test::Unit::TestCase
     assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
   end
 
+  def test_with_refinements_non_main_ractor_rejected
+    # The memo lives on the shared source iseq, so with_refinements is limited
+    # to the main Ractor to keep the memo single-threaded.
+    assert_separately([], <<~'RUBY')
+      Warning[:experimental] = false
+      module M
+        refine(String) { def shout = upcase + "!" }
+      end
+      err = Ractor.new { (->(s) { s.shout }).with_refinements(M) rescue $! }.value
+      assert_instance_of(Ractor::IsolationError, err)
+    RUBY
+  end
+
   def test_with_refinements_chain_rejected
     # Chaining would need merge-or-replace semantics for the refinement sets;
     # both are confusing, so a refined proc rejects further with_refinements.

@@ -197,6 +197,8 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  * modules, pass them all in a single call:
  *
  *   refined = original.with_refinements(StringRefinement, OtherRefinement)
+ *
+ * This method can only be called from the main Ractor.
  */
 static VALUE
 proc_with_refinements(int argc, VALUE *argv, VALUE self)
@@ -205,6 +207,15 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
     GetProcPtr(self, src);
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
+
+    /* The copied iseq and cref are memoized on the source iseq's body, which is
+     * shared across Ractors; concurrent lookups/stores from multiple Ractors
+     * would race on that memo (and free its module array under another reader).
+     * Restrict to the main Ractor to keep the memo single-threaded. */
+    if (!rb_ractor_main_p()) {
+        rb_raise(rb_eRactorIsolationError,
+                 "can not call Proc#with_refinements from non-main Ractors");
+    }
 
     /* Only Procs created from a Ruby block are supported.  A Proc created from a
      * method has an iseq but is invoked through the bmethod path, which resolves
