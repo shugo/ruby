@@ -749,6 +749,80 @@ class TestProc < Test::Unit::TestCase
                     "expected memo hits (#{hits}) to allocate much less than misses (#{misses})")
   end
 
+  def test_with_refinements_rescue_ensure
+    # exercises the copied catch table and shared rescue local table
+    refined = ->(s) {
+      r = nil
+      begin
+        r = s.shout
+      rescue NoMethodError
+        r = "rescued"
+      ensure
+        r = "#{r}."
+      end
+      r
+    }.with_refinements(WithRefinementsModule)
+    assert_equal("YO!.", refined.call("yo"))
+  end
+
+  def test_with_refinements_def_in_block
+    # a literal def inside the block creates a nested method iseq whose
+    # local_iseq is itself (in-subtree); the copy must rebuild it.
+    # Specified behavior: like a def inside a `using` scope, a method defined
+    # inside the block sees the refinements (the def captures the block's
+    # cref), so the refinement also applies when the method is called later.
+    refined = ->(s) {
+      o = Object.new
+      def o.m = "hi".shout
+      [s.shout, o.m]
+    }.with_refinements(WithRefinementsModule)
+    assert_equal(["YO!", "HI!"], refined.call("yo"))
+  end
+
+  def test_with_refinements_keyword_and_optional_args
+    refined = ->(a, b = "z", c:, d: "w") {
+      [a, b, c, d].map(&:shout).join
+    }.with_refinements(WithRefinementsModule)
+    assert_equal("A!Z!C!W!", refined.call("a", c: "c"))
+    assert_equal("A!B!C!D!", refined.call("a", "b", c: "c", d: "d"))
+  end
+
+  def test_with_refinements_case_when_literal
+    # literal when-clauses compile to a CDHASH operand that must round-trip
+    refined = ->(s) {
+      case s.shout
+      when "A!" then 1
+      when "B!" then 2
+      else 0
+      end
+    }.with_refinements(WithRefinementsModule)
+    assert_equal(1, refined.call("a"))
+    assert_equal(2, refined.call("b"))
+    assert_equal(0, refined.call("c"))
+  end
+
+  def test_with_refinements_flip_flop
+    # flip-flop allocates a special-variable slot keyed off the local iseq;
+    # the copy must run its own flip state independent of the original
+    body = ->(arr) {
+      out = []
+      arr.each { |i| out << i if (i == 2)..(i == 4) }
+      out
+    }
+    refined = body.with_refinements(WithRefinementsModule)
+    assert_equal([2, 3, 4], refined.call([1, 2, 3, 4, 5]))
+    # a second call starts from a fresh flip state
+    assert_equal([2, 3, 4], refined.call([1, 2, 3, 4, 5]))
+  end
+
+  def test_with_refinements_preserves_location_and_parameters
+    orig = ->(a, b = 1, *c, d:, **e, &f) { a }
+    refined = orig.with_refinements(WithRefinementsModule)
+    assert_equal(orig.source_location, refined.source_location)
+    assert_equal(orig.parameters, refined.parameters)
+    assert_equal(orig.arity, refined.arity)
+  end
+
   def test_clone_subclass
     c1 = Class.new(Proc)
     assert_equal c1, c1.new{}.clone.class, '[Bug #17545]'

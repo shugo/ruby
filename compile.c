@@ -12620,6 +12620,7 @@ struct ibf_dump {
     st_table *iseq_table; /* iseq -> iseq number */
     struct ibf_dump_buffer global_buffer;
     struct ibf_dump_buffer *current_buffer;
+    bool subtree; /* dumping a nested block subtree (Proc#with_refinements copy) */
 };
 
 struct ibf_load_buffer {
@@ -12875,6 +12876,29 @@ ibf_dump_iseq(struct ibf_dump *dump, const rb_iseq_t *iseq)
     }
     else {
         return ibf_table_find_or_insert(dump->iseq_table, (st_data_t)iseq);
+    }
+}
+
+/* Dump a parent_iseq/local_iseq reference.  In subtree mode (dumping a nested
+ * block for Proc#with_refinements) such a reference may point at an iseq
+ * OUTSIDE the dumped subtree (the enclosing method/top iseq).  Pulling that in
+ * via ibf_dump_iseq would recursively drag the whole enclosing tree into the
+ * dump, so instead we only reference iseqs already in the table (lookup-only)
+ * and dump out-of-subtree references as absent (-1); they are restored from the
+ * source tree after load.  Every in-subtree member's parent/local that is
+ * itself in the subtree is already inserted by the time this iseq is dumped,
+ * so lookup-only is sufficient and order-safe. */
+static int
+ibf_dump_iseq_subtree_ref(struct ibf_dump *dump, const rb_iseq_t *iseq)
+{
+    if (iseq == NULL) {
+        return -1;
+    }
+    else if (dump->subtree) {
+        return ibf_table_lookup(dump->iseq_table, (st_data_t)iseq);
+    }
+    else {
+        return ibf_dump_iseq(dump, iseq);
     }
 }
 
@@ -13703,8 +13727,8 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     const ibf_offset_t lvar_states_offset = ibf_dump_lvar_states(dump, iseq);
     const unsigned int catch_table_size =   body->catch_table ? body->catch_table->size : 0;
     const ibf_offset_t catch_table_offset = ibf_dump_catch_table(dump, iseq);
-    const int parent_iseq_index =           ibf_dump_iseq(dump, ISEQ_BODY(iseq)->parent_iseq);
-    const int local_iseq_index =            ibf_dump_iseq(dump, ISEQ_BODY(iseq)->local_iseq);
+    const int parent_iseq_index =           ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->parent_iseq);
+    const int local_iseq_index =            ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->local_iseq);
     /* For block iseqs this slot holds the (transient, non-serialized)
      * Proc#with_refinements memo rather than a mandatory_only_iseq, so dump
      * it as absent. */
@@ -14860,6 +14884,7 @@ ibf_dump_setup(struct ibf_dump *dump, VALUE dumper_obj)
 {
     dump->global_buffer.obj_table = NULL; // GC may run before a value is assigned
     dump->iseq_table = NULL;
+    dump->subtree = false;
 
     RB_OBJ_WRITE(dumper_obj, &dump->global_buffer.str, rb_str_new(0, 0));
     dump->global_buffer.obj_table = ibf_dump_object_table_new();
@@ -14868,24 +14893,15 @@ ibf_dump_setup(struct ibf_dump *dump, VALUE dumper_obj)
     dump->current_buffer = &dump->global_buffer;
 }
 
-VALUE
-rb_iseq_ibf_dump(const rb_iseq_t *iseq, VALUE opt)
+/* Serialize iseq into dump's buffer (the iseq itself, the iseq list, the object
+ * list, and optional trailing extra data) and return the resulting string.
+ * dump must already be set up (ibf_dump_setup, plus dump->subtree set for a
+ * Proc#with_refinements subtree copy).  Shared by rb_iseq_ibf_dump and
+ * rb_iseq_dup_with_independent_caches so the header layout has a single writer. */
+static VALUE
+ibf_dump_write_all(struct ibf_dump *dump, const rb_iseq_t *iseq, VALUE opt)
 {
-    struct ibf_dump *dump;
     struct ibf_header header = {{0}};
-    VALUE dump_obj;
-    VALUE str;
-
-    if (ISEQ_BODY(iseq)->parent_iseq != NULL ||
-        ISEQ_BODY(iseq)->local_iseq != iseq) {
-        rb_raise(rb_eRuntimeError, "should be top of iseq");
-    }
-    if (RTEST(ISEQ_COVERAGE(iseq))) {
-        rb_raise(rb_eRuntimeError, "should not compile with coverage");
-    }
-
-    dump_obj = TypedData_Make_Struct(0, struct ibf_dump, &ibf_dump_type, dump);
-    ibf_dump_setup(dump, dump_obj);
 
     ibf_dump_write(dump, &header, sizeof(header));
     ibf_dump_iseq(dump, iseq);
@@ -14914,7 +14930,28 @@ rb_iseq_ibf_dump(const rb_iseq_t *iseq, VALUE opt)
 
     ibf_dump_overwrite(dump, &header, sizeof(header), 0);
 
-    str = dump->global_buffer.str;
+    return dump->global_buffer.str;
+}
+
+VALUE
+rb_iseq_ibf_dump(const rb_iseq_t *iseq, VALUE opt)
+{
+    struct ibf_dump *dump;
+    VALUE dump_obj;
+    VALUE str;
+
+    if (ISEQ_BODY(iseq)->parent_iseq != NULL ||
+        ISEQ_BODY(iseq)->local_iseq != iseq) {
+        rb_raise(rb_eRuntimeError, "should be top of iseq");
+    }
+    if (RTEST(ISEQ_COVERAGE(iseq))) {
+        rb_raise(rb_eRuntimeError, "should not compile with coverage");
+    }
+
+    dump_obj = TypedData_Make_Struct(0, struct ibf_dump, &ibf_dump_type, dump);
+    ibf_dump_setup(dump, dump_obj);
+
+    str = ibf_dump_write_all(dump, iseq, opt);
     RB_GC_GUARD(dump_obj);
     return str;
 }
@@ -15118,6 +15155,101 @@ rb_iseq_ibf_load_bytes(const char *bytes, size_t size)
 
     RB_GC_GUARD(loader_obj);
     return iseq;
+}
+
+/* Collect the dump's iseq table into an array indexed by iseq-list index, so
+ * each loaded copy can be paired with its source iseq for post-load fixup. */
+static int
+ibf_dump_iseq_table_collect_i(st_data_t key, st_data_t val, st_data_t arg)
+{
+    const rb_iseq_t **srcs = (const rb_iseq_t **)arg;
+    srcs[(int)val] = (const rb_iseq_t *)key;
+    return ST_CONTINUE;
+}
+
+/* Deep-copy an iseq subtree with independent inline caches, used by
+ * Proc#with_refinements (see proc.c) to give a copied block its own call/const
+ * caches so refinement method resolution cannot leak into the original Proc.
+ *
+ * Rather than hand-mirror every rb_iseq_constant_body field (a maintenance
+ * hazard: a new field silently shared would mean double-free/UAF), we reuse the
+ * IBF serializer in an in-memory round-trip.  IBF is updated whenever the body
+ * layout changes, and its load path already produces exactly the fresh state we
+ * need: zeroed is_entries (so once/IC caches start cold), empty call caches,
+ * NULL JIT payloads, coverage/original_iseq cleared, and threaded-code +
+ * trace instrumentation reapplied.
+ *
+ * "subtree mode" lets us dump a nested block iseq (normally IBF only dumps top
+ * iseqs).  References that point outside the dumped subtree (the enclosing
+ * method/top iseq, reachable via parent_iseq/local_iseq) are dumped as absent
+ * and restored here from the source tree, so the copy shares the original
+ * enclosing scope exactly as the captured environment does.
+ *
+ * The binary never leaves this process; it is not exposed through
+ * ISeq#to_binary, so no format/version compatibility concerns apply.
+ *
+ * Limitation: a block containing an `invokebuiltin` operand (only possible in
+ * core .rb sources compiled with the builtin compiler, not reachable from user
+ * Procs) cannot be loaded outside boot and will raise. */
+const rb_iseq_t *
+rb_iseq_dup_with_independent_caches(const rb_iseq_t *src_root)
+{
+    struct ibf_dump *dump;
+    VALUE dump_obj;
+    VALUE str;
+
+    /* --- dump the subtree --- */
+    dump_obj = TypedData_Make_Struct(0, struct ibf_dump, &ibf_dump_type, dump);
+    ibf_dump_setup(dump, dump_obj);
+    dump->subtree = true;
+
+    str = ibf_dump_write_all(dump, src_root, Qnil);
+
+    /* pair list index -> source iseq for boundary-reference fixup */
+    unsigned int iseq_count = (unsigned int)dump->iseq_table->num_entries;
+    VALUE srcs_buf;
+    const rb_iseq_t **srcs = ALLOCV_N(const rb_iseq_t *, srcs_buf, iseq_count);
+    st_foreach(dump->iseq_table, ibf_dump_iseq_table_collect_i, (st_data_t)srcs);
+
+    /* --- load it back --- */
+    struct ibf_load *load;
+    VALUE loader_obj = TypedData_Make_Struct(0, struct ibf_load, &ibf_load_type, load);
+    ibf_load_setup(load, loader_obj, str);
+
+    const rb_iseq_t *result = NULL;
+    for (unsigned int i = 0; i < iseq_count; i++) {
+        rb_iseq_t *copy = ibf_load_iseq(load, (const rb_iseq_t *)(VALUE)i);
+        /* force completion even under USE_LAZY_LOAD so nothing retains the
+         * loader/byte buffer after we return. */
+        if (FL_TEST((VALUE)copy, ISEQ_NOT_LOADED_YET)) {
+            rb_ibf_load_iseq_complete(copy);
+        }
+
+        const rb_iseq_t *src = srcs[i];
+        struct rb_iseq_constant_body *cb = ISEQ_BODY(copy);
+        const struct rb_iseq_constant_body *sb = ISEQ_BODY(src);
+
+        /* restore subtree-boundary references dumped as absent */
+        if (cb->parent_iseq == NULL && sb->parent_iseq != NULL) {
+            RB_OBJ_WRITE(copy, &cb->parent_iseq, sb->parent_iseq);
+        }
+        if (cb->local_iseq == NULL && sb->local_iseq != NULL) {
+            RB_OBJ_WRITE(copy, &cb->local_iseq, sb->local_iseq);
+        }
+        /* keep path/script_lines identity with the source for debugging tools
+         * (backtraces, error_highlight) that key off them. */
+        RB_OBJ_WRITE(copy, &cb->location.pathobj, sb->location.pathobj);
+        if (sb->variable.script_lines != Qnil) {
+            RB_OBJ_WRITE(copy, &cb->variable.script_lines, sb->variable.script_lines);
+        }
+
+        if (i == 0) result = copy;
+    }
+
+    ALLOCV_END(srcs_buf);
+    RB_GC_GUARD(dump_obj);
+    RB_GC_GUARD(loader_obj);
+    return result;
 }
 
 VALUE

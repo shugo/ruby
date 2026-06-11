@@ -162,7 +162,6 @@ proc_dup(VALUE self)
 
 rb_cref_t *rb_vm_get_cref(const VALUE *ep);
 VALUE rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref);
-const rb_iseq_t *rb_iseq_dup_with_independent_caches(const rb_iseq_t *iseq);
 bool rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
                                     long argc, const VALUE *mods,
                                     const rb_iseq_t **iseq_out, const rb_cref_t **cref_out);
