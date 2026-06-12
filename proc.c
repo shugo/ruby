@@ -197,6 +197,26 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  *
  *   refined = original.with_refinements(StringRefinement, OtherRefinement)
  *
+ * The refinements are in effect throughout the body, including nested blocks
+ * and methods defined with +def+ inside it.  As with a +def+ inside a +using+
+ * scope, such a method keeps the refinements even when it is called later:
+ *
+ *   refined = ->(s) {
+ *     -> { s.shout }.call          # nested block: "HI!"
+ *   }.with_refinements(StringRefinement)
+ *
+ *   refined = -> {
+ *     obj = Object.new
+ *     def obj.shout_hi = "hi".shout  # the method sees the refinement
+ *     obj.shout_hi                   #=> "HI!"
+ *   }.with_refinements(StringRefinement)
+ *
+ * This method copies the instruction sequence of the block and of all of its
+ * nested blocks so that the copy can resolve methods through the refinements
+ * without affecting the original Proc.  Applying refinements therefore
+ * increases memory use roughly in proportion to the size of the block.  The
+ * copy is cached and reused for the same receiver and the same modules.
+ *
  * This method can only be called from the main Ractor.
  */
 static VALUE
