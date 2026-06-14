@@ -613,16 +613,18 @@ class TestProc < Test::Unit::TestCase
     assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
   end
 
-  def test_with_refinements_non_main_ractor_rejected
-    # The memo lives on the shared source iseq, so with_refinements is limited
-    # to the main Ractor to keep the memo single-threaded.
+  def test_with_refinements_non_main_ractor
     assert_separately([], <<~'RUBY')
       Warning[:experimental] = false
-      module M
-        refine(String) { def shout = upcase + "!" }
-      end
-      err = Ractor.new { (->(s) { s.shout }).with_refinements(M) rescue $! }.value
-      assert_instance_of(Ractor::IsolationError, err)
+      module M1; refine(String) { def shout = upcase + "!" }; end
+      module M2; refine(String) { def shout = downcase }; end
+      ractors = 10.times.map { |i|
+        Ractor.new(i) { |i|
+          ->(s) { s.shout }.with_refinements(i.even? ? M1 : M2).call("Hi")
+        }
+      }
+      values = ractors.map(&:value)
+      assert_equal(["HI!", "hi"] * 5, values)
     RUBY
   end
 

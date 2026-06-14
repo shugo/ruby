@@ -216,8 +216,6 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *b
  * without affecting the original Proc.  Applying refinements therefore
  * increases memory use roughly in proportion to the size of the block.  The
  * copy is cached and reused for the same receiver and the same modules.
- *
- * This method can only be called from the main Ractor.
  */
 static VALUE
 proc_with_refinements(int argc, VALUE *argv, VALUE self)
@@ -226,15 +224,6 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
     GetProcPtr(self, src);
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
-
-    /* The copied iseq and cref are memoized on the source iseq's body, which is
-     * shared across Ractors; concurrent lookups/stores from multiple Ractors
-     * would race on that memo (and free its module array under another reader).
-     * Restrict to the main Ractor to keep the memo single-threaded. */
-    if (!rb_ractor_main_p()) {
-        rb_raise(rb_eRactorIsolationError,
-                 "can not call Proc#with_refinements from non-main Ractors");
-    }
 
     /* Only Procs created from a Ruby block are supported.  A Proc created from a
      * method has an iseq but is invoked through the bmethod path, which resolves
@@ -266,27 +255,30 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
      * in iseq.c. */
     const rb_iseq_t *new_iseq;
     const rb_cref_t *new_cref;
-    if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
-        /* Duplicate the block's cref (keeping its current refinements) and
-         * activate the refinements of each module argument on the copy.  The
-         * cref is freshly duplicated and not referenced by any call site yet, so
-         * we use rb_using_module_recursive directly and skip the global
-         * refinement method cache flush that the top-level `using`
-         * (rb_using_module) performs. */
-        rb_cref_t *cref = rb_vm_cref_dup(base_cref);
-        for (int i = 0; i < argc; i++) {
-            rb_using_module_recursive(cref, argv[i]);
+    /* Use RB_VM_LOCKING() to synchronize refinement_memo access in multi-Ractor mode. */
+    RB_VM_LOCKING() {
+        if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
+            /* Duplicate the block's cref (keeping its current refinements) and
+             * activate the refinements of each module argument on the copy.  The
+             * cref is freshly duplicated and not referenced by any call site yet, so
+             * we use rb_using_module_recursive directly and skip the global
+             * refinement method cache flush that the top-level `using`
+             * (rb_using_module) performs. */
+            rb_cref_t *cref = rb_vm_cref_dup(base_cref);
+            for (int i = 0; i < argc; i++) {
+                rb_using_module_recursive(cref, argv[i]);
+            }
+
+            /* Recursively copy the block's iseq (and its children) so the new Proc
+             * has its own inline method caches.  This is required for correctness:
+             * the VM caches refinement method resolution per call site assuming one
+             * iseq runs under a single lexical cref, so sharing the iseq would leak
+             * the refined methods into the original Proc. */
+            new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
+            new_cref = cref;
+
+            rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
         }
-
-        /* Recursively copy the block's iseq (and its children) so the new Proc
-         * has its own inline method caches.  This is required for correctness:
-         * the VM caches refinement method resolution per call site assuming one
-         * iseq runs under a single lexical cref, so sharing the iseq would leak
-         * the refined methods into the original Proc. */
-        new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
-        new_cref = cref;
-
-        rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
     return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
