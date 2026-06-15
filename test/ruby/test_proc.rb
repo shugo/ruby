@@ -862,6 +862,90 @@ class TestProc < Test::Unit::TestCase
     assert_equal(orig.arity, refined.arity)
   end
 
+  module WithRefinementsOperators
+    refine Integer do
+      def +(other) = "plus(#{self},#{other})"
+      def <(other) = "lt"
+    end
+    refine Array do
+      def [](i) = "at#{i}"
+    end
+  end
+
+  def test_with_refinements_operators
+    # Specialized instructions (opt_plus, opt_lt, opt_aref, ...) must honor the
+    # refinement on the copy without leaking it into the original Proc.
+    refined = ->(a, b) { [a + b, a < b] }.with_refinements(WithRefinementsOperators)
+    assert_equal(["plus(1,2)", "lt"], refined.call(1, 2))
+    aref = ->(a) { a[0] }.with_refinements(WithRefinementsOperators)
+    assert_equal("at0", aref.call([9]))
+    # the original Procs keep using the builtin operators
+    assert_equal(3, ->(a, b) { a + b }.call(1, 2))
+  end
+
+  def test_with_refinements_preserves_lambda
+    # The copy must keep the receiver's lambda/proc nature, including a lambda's
+    # strict argument checking.
+    lam = ->(a, b) { [a, b] }.with_refinements(WithRefinementsModule)
+    assert_equal(true, lam.lambda?)
+    assert_raise(ArgumentError) { lam.call(1) }
+    pr = proc { |a, b| [a, b] }.with_refinements(WithRefinementsModule)
+    assert_equal(false, pr.lambda?)
+    # proc argument handling fills missing parameters with nil instead of raising
+    assert_equal([1, nil], pr.call(1))
+  end
+
+  def test_with_refinements_preserved_by_clone
+    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+    assert_equal("Z!", refined.clone.call("z"))
+    # the refinement state survives clone, so chaining on the clone is rejected too
+    assert_raise(ArgumentError) { refined.clone.with_refinements(WithRefinementsModule2) }
+  end
+
+  def test_with_refinements_module_precedence
+    # When several modules refine the same method, the last one wins, matching
+    # the precedence of nested `using`.
+    body = ->(s) { s.shout }
+    assert_equal("?", body.with_refinements(WithRefinementsModule, WithRefinementsModule2).call("Hi"))
+    assert_equal("HI!", body.with_refinements(WithRefinementsModule2, WithRefinementsModule).call("Hi"))
+  end
+
+  class WithRefinementsSuperBase
+    def greet = "base"
+  end
+
+  module WithRefinementsSuperModule
+    refine WithRefinementsSuperBase do
+      def greet = "ref-" + super
+    end
+  end
+
+  def test_with_refinements_super
+    # A refined method may call super to reach the method it refines.
+    refined = ->(o) { o.greet }.with_refinements(WithRefinementsSuperModule)
+    assert_equal("ref-base", refined.call(WithRefinementsSuperBase.new))
+  end
+
+  def test_with_refinements_tracepoint
+    # Line events fire on the copied iseq just like on the original.
+    src = "->(s) {\n  x = s.shout\n  x\n}"
+    refined = eval(src, binding, "wr_trace_eval").with_refinements(WithRefinementsModule)
+    lines = []
+    tp = TracePoint.new(:line) { |t| lines << t.lineno if t.path == "wr_trace_eval" }
+    result = tp.enable { refined.call("hi") }
+    assert_equal("HI!", result)
+    assert_equal([2, 3], lines)
+  end
+
+  def test_with_refinements_recursion_sees_refinements
+    # The copy shares the source Proc's environment, so a recursive call through
+    # the captured local reaches the refined Proc and keeps the refinements.
+    fact = nil
+    fact = ->(s) { s.empty? ? "" : s[0].shout + fact.call(s[1..]) }
+              .with_refinements(WithRefinementsModule)
+    assert_equal("A!B!C!", fact.call("abc"))
+  end
+
   def test_clone_subclass
     c1 = Class.new(Proc)
     assert_equal c1, c1.new{}.clone.class, '[Bug #17545]'
