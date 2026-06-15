@@ -650,6 +650,43 @@ class TestProc < Test::Unit::TestCase
     assert_raise(ArgumentError) { Object.new.define_singleton_method(:m, refined) }
   end
 
+  # Each refinement module refines only one class so the nested test below can
+  # tell apart the refinement added on the inner Proc (String) from the one
+  # inherited from the enclosing refined Proc (Integer).
+  module WithRefinementsStringOnly
+    refine String do
+      def shout = upcase + "!"
+    end
+  end
+
+  module WithRefinementsIntegerOnly
+    refine Integer do
+      def doubled = self * 2
+    end
+  end
+
+  def test_with_refinements_nested_proc_is_not_a_chain
+    # A Proc created lexically INSIDE a with_refinements Proc is not itself "a
+    # Proc that already has refinements": it only inherits the enclosing
+    # refinements lexically.  with_refinements (and define_method) must therefore
+    # be accepted on it, and the inner Proc must see both the enclosing
+    # refinement and the one it adds.  Only the Proc returned by with_refinements
+    # is rejected for chaining.
+    result = -> {
+      inner = ->(s, n) { [s.shout, n.doubled] }
+      inner.with_refinements(WithRefinementsStringOnly).call("hi", 3)
+    }.with_refinements(WithRefinementsIntegerOnly).call
+    # WithRefinementsStringOnly is added on the inner copy; WithRefinementsIntegerOnly
+    # is inherited from the enclosing refined Proc.
+    assert_equal(["HI!", 6], result)
+
+    # define_method from such a nested Proc is allowed (it is not the
+    # with_refinements result itself).
+    assert_nothing_raised do
+      -> { Class.new { define_method(:m, ->(s) { s }) } }.with_refinements(WithRefinementsIntegerOnly).call
+    end
+  end
+
   def test_with_refinements_gc
     assert_normal_exit(<<~RUBY)
       module M
