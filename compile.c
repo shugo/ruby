@@ -14007,6 +14007,10 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
 
     RB_OBJ_WRITE(iseq, &load_body->parent_iseq, parent_iseq);
     RB_OBJ_WRITE(iseq, &load_body->local_iseq, local_iseq);
+    /* For block iseqs mandatory_only_iseq was dumped as absent (index -1), so
+     * this writes NULL, which also leaves opt.refinement_memo NULL (the union
+     * members share representation; see the opt comment in vm_core.h).  A copy
+     * thus starts with no with_refinements memo. */
     RB_OBJ_WRITE(iseq, &load_body->opt.mandatory_only_iseq, mandatory_only_iseq);
 
     // This must be done after the local table is loaded.
