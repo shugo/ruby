@@ -561,7 +561,16 @@ struct rb_iseq_constant_body {
      *     unless this block iseq has been a Proc#with_refinements source.
      * A block iseq never has a mandatory-only variant and only block iseqs are
      * with_refinements sources, so discriminate with
-     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK. */
+     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK.
+     *
+     * Both members are pointers to structure types, so by C99 (ISO/IEC
+     * 9899:1999) 6.2.5p27 -- "All pointers to structure types shall have the
+     * same representation and alignment requirements as each other" -- storing
+     * NULL into one member makes the other read as NULL too.  IBF load relies on
+     * this: it only writes opt.mandatory_only_iseq (NULL for block iseqs), which
+     * also leaves opt.refinement_memo NULL.  Adding a non-structure-pointer
+     * member (void *, uintptr_t, ...) would break that guarantee and require
+     * writing the correct member explicitly. */
     union {
         const rb_iseq_t *mandatory_only_iseq;
         struct rb_iseq_refinement_memo *refinement_memo;
