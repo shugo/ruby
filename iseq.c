@@ -37,6 +37,7 @@
 #include "internal/thread.h"
 #include "internal/variable.h"
 #include "iseq.h"
+#include "ruby/atomic.h"
 #include "ruby/util.h"
 #include "vm_core.h"
 #include "ractor_core.h"
@@ -235,9 +236,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
         compile_data_free(ISEQ_COMPILE_DATA(iseq));
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
-        /* refinement_memo shares a slot with mandatory_only_iseq (a GC object,
-         * not owned here); only block iseqs hold a memo to free. */
-        if (body->type == ISEQ_TYPE_BLOCK) iseq_refinement_memo_free(body->opt.refinement_memo);
+        /* refinement_memo is a GC-managed T_DATA; no manual free needed. */
         SIZED_FREE(body);
     }
 
@@ -252,8 +251,14 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * keyed by (base_cref, modules).  Repeatedly calling with_refinements on the
  * same proc with the same modules then reuses the copy instead of rebuilding it.
  * Sharing a copy is safe because all results for one key run under the same
- * refinement set, so their inline caches resolve identically.  The memo is owned
- * by the source iseq, so its entries live exactly as long as the source iseq. */
+ * refinement set, so their inline caches resolve identically.
+ *
+ * The memo is a GC-managed T_DATA object, immutable after publication.
+ * The read path (lookup) is lock-free using acquire semantics; the write path
+ * (store) runs under RB_VM_LOCKING().  When a new memo replaces the old one,
+ * the old T_DATA is no longer referenced by the iseq but stays alive as long
+ * as any lock-free reader holds its VALUE on the C stack (conservative GC
+ * pins it).  Once all readers finish, the next GC reclaims it. */
 
 struct rb_iseq_refinement_memo {
     const rb_cref_t *base_cref;     /* key: captured cref of the source proc */
@@ -261,6 +266,55 @@ struct rb_iseq_refinement_memo {
     VALUE *mods;                    /* key: argc module objects (heap-allocated) */
     const rb_iseq_t *copied_iseq;   /* value: copied iseq with independent caches */
     const rb_cref_t *cref;          /* value: cref with refinements activated */
+};
+
+static void
+refinement_memo_mark(void *ptr)
+{
+    struct rb_iseq_refinement_memo *memo = ptr;
+    if (memo->base_cref) rb_gc_mark_movable((VALUE)memo->base_cref);
+    if (memo->cref) rb_gc_mark_movable((VALUE)memo->cref);
+    if (memo->copied_iseq) rb_gc_mark_movable((VALUE)memo->copied_iseq);
+    for (long i = 0; i < memo->argc; i++) {
+        rb_gc_mark_movable(memo->mods[i]);
+    }
+}
+
+static void
+refinement_memo_compact(void *ptr)
+{
+    struct rb_iseq_refinement_memo *memo = ptr;
+    if (memo->base_cref) memo->base_cref = (const rb_cref_t *)rb_gc_location((VALUE)memo->base_cref);
+    if (memo->cref) memo->cref = (const rb_cref_t *)rb_gc_location((VALUE)memo->cref);
+    if (memo->copied_iseq) memo->copied_iseq = (const rb_iseq_t *)rb_gc_location((VALUE)memo->copied_iseq);
+    for (long i = 0; i < memo->argc; i++) {
+        memo->mods[i] = rb_gc_location(memo->mods[i]);
+    }
+}
+
+static void
+refinement_memo_free(void *ptr)
+{
+    struct rb_iseq_refinement_memo *memo = ptr;
+    ruby_xfree(memo->mods);
+}
+
+static size_t
+refinement_memo_memsize(const void *ptr)
+{
+    const struct rb_iseq_refinement_memo *memo = ptr;
+    return sizeof(*memo) + memo->argc * sizeof(VALUE);
+}
+
+static const rb_data_type_t refinement_memo_type = {
+    .wrap_struct_name = "refinement_memo",
+    .function = {
+        .dmark = refinement_memo_mark,
+        .dfree = refinement_memo_free,
+        .dsize = refinement_memo_memsize,
+        .dcompact = refinement_memo_compact,
+    },
+    .flags = RUBY_TYPED_FREE_IMMEDIATELY | RUBY_TYPED_WB_PROTECTED,
 };
 
 static bool
@@ -274,74 +328,57 @@ iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
     return true;
 }
 
-/* On a key hit, fill *iseq_out / *cref_out and return true; otherwise false. */
+/* Lock-free lookup: acquire-load the memo VALUE, read immutable fields. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
                                long argc, const VALUE *mods,
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
-    const struct rb_iseq_refinement_memo *memo = ISEQ_BODY(src_iseq)->opt.refinement_memo;
-    if (memo && iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
-        *iseq_out = memo->copied_iseq;
-        *cref_out = memo->cref;
-        return true;
+    VALUE memo_val = rbimpl_atomic_value_load(
+        &ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
+    if (memo_val) {
+        const struct rb_iseq_refinement_memo *memo = RTYPEDDATA_DATA(memo_val);
+        if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
+            *iseq_out = memo->copied_iseq;
+            *cref_out = memo->cref;
+            return true;
+        }
     }
     return false;
 }
 
-/* Replace the single memo entry with the given key/value (overwriting any
- * previous entry). */
+/* Allocate a new immutable T_DATA memo and publish it with release semantics.
+ * Must be called under RB_VM_LOCKING(). */
 void
 rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_cref,
                               long argc, const VALUE *mods,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
-    /* Allocate the key array up front: this (and ZALLOC below) can trigger a
-     * GC, which marks the live memo through its source iseq.  By keeping the
-     * memo consistent (argc matches mods) whenever it is reachable from
-     * body->opt.refinement_memo, the mark never sees argc > 0 with a stale/NULL
-     * mods. */
     VALUE *new_mods = ALLOC_N(VALUE, argc);
     MEMCPY(new_mods, mods, VALUE, argc);
 
-    struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
-    /* The memo shares storage with mandatory_only_iseq, discriminated by the
-     * iseq type; with_refinements sources are always block iseqs. */
-    VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
-    struct rb_iseq_refinement_memo *memo = body->opt.refinement_memo;
-    if (memo == NULL) {
-        /* Zeroed (argc == 0, mods == NULL), so it is safe to mark before it is
-         * fully populated below. */
-        memo = ZALLOC(struct rb_iseq_refinement_memo);
-        body->opt.refinement_memo = memo;
-    }
-    else {
-        ruby_xfree(memo->mods);
-    }
-    /* Plain stores from here on (no allocation, no GC): the memo transitions
-     * directly from its previous consistent state to the new one. */
+    struct rb_iseq_refinement_memo *memo;
+    VALUE memo_obj = TypedData_Make_Struct(
+        0, struct rb_iseq_refinement_memo, &refinement_memo_type, memo);
     memo->base_cref = base_cref;
     memo->argc = argc;
     memo->mods = new_mods;
     memo->copied_iseq = copied_iseq;
     memo->cref = cref;
 
-    /* src_iseq now references these objects through the memo. */
-    RB_OBJ_WRITTEN(src_iseq, Qundef, copied_iseq);
-    RB_OBJ_WRITTEN(src_iseq, Qundef, (VALUE)cref);
-    if (base_cref) RB_OBJ_WRITTEN(src_iseq, Qundef, (VALUE)base_cref);
-    for (long i = 0; i < argc; i++) {
-        if (!SPECIAL_CONST_P(mods[i])) RB_OBJ_WRITTEN(src_iseq, Qundef, mods[i]);
-    }
-}
+    rb_obj_hide(memo_obj);
 
-static void
-iseq_refinement_memo_free(struct rb_iseq_refinement_memo *memo)
-{
-    if (memo) {
-        ruby_xfree(memo->mods);
-        ruby_xfree(memo);
+    RB_OBJ_WRITTEN(memo_obj, Qundef, (VALUE)copied_iseq);
+    RB_OBJ_WRITTEN(memo_obj, Qundef, (VALUE)cref);
+    if (base_cref) RB_OBJ_WRITTEN(memo_obj, Qundef, (VALUE)base_cref);
+    for (long i = 0; i < argc; i++) {
+        if (!SPECIAL_CONST_P(mods[i])) RB_OBJ_WRITTEN(memo_obj, Qundef, mods[i]);
     }
+
+    struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
+    VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
+    rbimpl_atomic_value_store(&body->opt.refinement_memo, memo_obj, RBIMPL_ATOMIC_RELEASE);
+    RB_OBJ_WRITTEN(src_iseq, Qundef, memo_obj);
 }
 
 typedef VALUE iseq_value_itr_t(void *ctx, VALUE obj);
@@ -490,13 +527,7 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
          * the iseq type selects which one is live. */
         if (body->type == ISEQ_TYPE_BLOCK) {
             if (body->opt.refinement_memo) {
-                struct rb_iseq_refinement_memo *memo = body->opt.refinement_memo;
-                if (memo->base_cref) rb_gc_mark_and_move((VALUE *)&memo->base_cref);
-                if (memo->cref) rb_gc_mark_and_move((VALUE *)&memo->cref);
-                if (memo->copied_iseq) rb_gc_mark_and_move_ptr(&memo->copied_iseq);
-                for (long i = 0; i < memo->argc; i++) {
-                    rb_gc_mark_and_move(&memo->mods[i]);
-                }
+                rb_gc_mark_and_move(&body->opt.refinement_memo);
             }
         }
         else if (body->opt.mandatory_only_iseq) {
@@ -645,12 +676,7 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
         size += body->ci_size * sizeof(struct rb_call_data);
         // TODO: should we count imemo_callinfo?
 
-        /* refinement_memo shares a slot with mandatory_only_iseq; only block
-         * iseqs hold a memo. */
-        if (body->type == ISEQ_TYPE_BLOCK && body->opt.refinement_memo) {
-            size += sizeof(struct rb_iseq_refinement_memo);
-            size += body->opt.refinement_memo->argc * sizeof(VALUE);
-        }
+        /* refinement_memo is a GC-managed T_DATA; its dsize reports its own size. */
     }
 
     compile_data = ISEQ_COMPILE_DATA(iseq);
