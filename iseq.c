@@ -371,6 +371,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, const rb_cref_t *base_c
     memo->cref = cref;
 
     rb_obj_hide(memo_obj);
+    FL_SET_RAW(memo_obj, RUBY_FL_SHAREABLE);
 
     RB_OBJ_WRITTEN(memo_obj, Qundef, (VALUE)copied_iseq);
     RB_OBJ_WRITTEN(memo_obj, Qundef, (VALUE)cref);
