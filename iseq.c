@@ -261,30 +261,29 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
 static bool
 iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
-                               VALUE base_cref, VALUE mods_ary)
+                               VALUE base_cref, long argc, const VALUE *mods)
 {
     if (memo->base_cref != base_cref) return false;
-    long argc = RARRAY_LEN(mods_ary);
     if (RARRAY_LEN(memo->mods) != argc) return false;
     const VALUE *a = RARRAY_CONST_PTR(memo->mods);
-    const VALUE *b = RARRAY_CONST_PTR(mods_ary);
     for (long i = 0; i < argc; i++) {
-        if (a[i] != b[i]) return false;
+        if (a[i] != mods[i]) return false;
     }
     return true;
 }
 
-/* Lock-free lookup: acquire-load the memo pointer, read immutable fields. */
+/* Lock-free lookup: acquire-load the memo pointer, read immutable fields.
+ * No allocation on this path so it never triggers GC. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
-                               VALUE mods_ary,
+                               long argc, const VALUE *mods,
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
     const struct rb_iseq_refinement_memo *memo =
         (const struct rb_iseq_refinement_memo *)rbimpl_atomic_ptr_load(
             (void **)&ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
     if (memo) {
-        if (iseq_refinement_memo_key_match(memo, base_cref, mods_ary)) {
+        if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
             *iseq_out = (const rb_iseq_t *)memo->copied_iseq;
             *cref_out = (const rb_cref_t *)memo->cref;
             return true;
@@ -301,9 +300,12 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
  * Must be called under RB_VM_LOCKING(). */
 void
 rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
-                              VALUE mods_ary,
+                              long argc, const VALUE *mods,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
+    VALUE mods_ary = rb_ary_new_from_values(argc, mods);
+    OBJ_FREEZE(mods_ary);
+
     VALUE memo_obj = rb_imemo_new(imemo_refinement_memo, 0,
                                   sizeof(struct rb_iseq_refinement_memo), true);
     struct rb_iseq_refinement_memo *memo =

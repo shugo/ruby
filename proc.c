@@ -163,10 +163,10 @@ proc_dup(VALUE self)
 rb_cref_t *rb_vm_get_cref(const VALUE *ep);
 VALUE rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref);
 bool rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
-                                    VALUE mods_ary,
+                                    long argc, const VALUE *mods,
                                     const rb_iseq_t **iseq_out, const rb_cref_t **cref_out);
 void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
-                                   VALUE mods_ary,
+                                   long argc, const VALUE *mods,
                                    const rb_iseq_t *copied_iseq, const rb_cref_t *cref);
 
 /*
@@ -248,13 +248,10 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
     VALUE base_cref = (VALUE)rb_vm_get_cref(src->block.as.captured.ep);
     const rb_iseq_t *src_iseq = src->block.as.captured.code.iseq;
 
-    VALUE mods_ary = rb_ary_new_from_values(argc, argv);
-    OBJ_FREEZE(mods_ary);
-
     const rb_iseq_t *new_iseq;
     const rb_cref_t *new_cref;
-    /* Lock-free memo lookup (acquire load, no lock needed on hit). */
-    if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, mods_ary, &new_iseq, &new_cref)) {
+    /* Lock-free memo lookup (acquire load, no allocation, no lock needed on hit). */
+    if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
         /* Memo miss: create under lock.  Redundant copies on concurrent miss
          * are harmless; the old imemo memo is reclaimed by GC. */
         RB_VM_LOCKING() {
@@ -264,7 +261,7 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
             }
             new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
             new_cref = cref;
-            rb_iseq_refinement_memo_store(src_iseq, base_cref, mods_ary, new_iseq, new_cref);
+            rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
         }
     }
 
