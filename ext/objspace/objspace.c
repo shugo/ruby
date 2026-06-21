@@ -406,7 +406,7 @@ count_tdata_objects(int argc, VALUE *argv, VALUE self)
     return hash;
 }
 
-static ID imemo_type_ids[IMEMO_MASK+1];
+static ID imemo_type_ids[imemo_refinement_memo+1];
 
 static void
 count_imemo_objects_i(VALUE v, void *data)
@@ -475,6 +475,7 @@ count_imemo_objects(int argc, VALUE *argv, VALUE self)
         INIT_IMEMO_TYPE_ID(imemo_fields);
         INIT_IMEMO_TYPE_ID(imemo_subclasses);
         INIT_IMEMO_TYPE_ID(imemo_cdhash);
+        INIT_IMEMO_TYPE_ID(imemo_refinement_memo);
 #undef INIT_IMEMO_TYPE_ID
     }
 

@@ -1330,6 +1330,7 @@ rb_gc_imemo_needs_cleanup_p(VALUE obj)
       case imemo_callcache:
       case imemo_throw_data:
       case imemo_cvar_entry:
+      case imemo_refinement_memo:
         return false;
 
       case imemo_env:

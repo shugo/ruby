@@ -33,6 +33,7 @@ rb_imemo_name(enum imemo_type type)
         IMEMO_NAME(fields);
         IMEMO_NAME(subclasses);
         IMEMO_NAME(cdhash);
+        IMEMO_NAME(refinement_memo);
 #undef IMEMO_NAME
     }
     rb_bug("unreachable");
@@ -45,7 +46,8 @@ rb_imemo_name(enum imemo_type type)
 VALUE
 rb_imemo_new(enum imemo_type type, VALUE v0, size_t size, bool is_shareable)
 {
-    VALUE flags = T_IMEMO | (type << FL_USHIFT) | (is_shareable ? FL_SHAREABLE : 0);
+    VALUE flags = T_IMEMO | ((type & IMEMO_MASK) << FL_USHIFT) | (is_shareable ? FL_SHAREABLE : 0);
+    if (type & 0x10) flags |= IMEMO_TYPE_EXT_BIT;
     return rb_newobj_of(v0, flags, size);
 }
 
@@ -320,6 +322,8 @@ rb_imemo_memsize(VALUE obj)
       case imemo_cdhash:
         size += st_memsize(rb_imemo_cdhash_tbl(obj)) - sizeof(st_table);
 
+        break;
+      case imemo_refinement_memo:
         break;
       default:
         rb_bug("unreachable");
@@ -601,6 +605,14 @@ rb_imemo_mark_and_move(VALUE obj, bool reference_updating)
         }
         break;
       }
+      case imemo_refinement_memo: {
+        struct rb_iseq_refinement_memo *memo = (struct rb_iseq_refinement_memo *)obj;
+        rb_gc_mark_and_move(&memo->base_cref);
+        rb_gc_mark_and_move(&memo->mods);
+        rb_gc_mark_and_move(&memo->copied_iseq);
+        rb_gc_mark_and_move(&memo->cref);
+        break;
+      }
       default:
         rb_bug("unreachable");
     }
@@ -718,6 +730,8 @@ rb_imemo_free(VALUE obj)
         st_free_embedded_table(rb_imemo_cdhash_tbl(obj));
         RB_DEBUG_COUNTER_INC(obj_imemo_cdhash);
 
+        break;
+      case imemo_refinement_memo:
         break;
       default:
         rb_bug("unreachable");
