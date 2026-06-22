@@ -100,8 +100,8 @@ rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref)
 {
     rb_proc_t *proc;
     GetProcPtr(procval, proc);
-    proc->has_refinements = 1;
     rb_ivar_set(procval, id_refinements_cref, (VALUE)cref);
+    proc->has_refinements = 1;
 }
 
 typedef struct {
