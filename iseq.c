@@ -281,10 +281,16 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, const rb_cref_t *base_
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
     const struct rb_iseq_refinement_memo *memo = ISEQ_BODY(src_iseq)->opt.refinement_memo;
-    if (memo && iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
-        *iseq_out = memo->copied_iseq;
-        *cref_out = memo->cref;
-        return true;
+    if (memo) {
+        if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
+            *iseq_out = memo->copied_iseq;
+            *cref_out = memo->cref;
+            return true;
+        }
+        rb_category_warn(
+            RB_WARN_CATEGORY_PERFORMANCE,
+            "with_refinements called with different modules for the same block disables memoization"
+        );
     }
     return false;
 }
