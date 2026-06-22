@@ -264,10 +264,16 @@ iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
                                VALUE base_cref, long argc, const VALUE *mods)
 {
     if (memo->base_cref != base_cref) return false;
-    if (RARRAY_LEN(memo->mods) != argc) return false;
-    const VALUE *a = RARRAY_CONST_PTR(memo->mods);
-    for (long i = 0; i < argc; i++) {
-        if (a[i] != mods[i]) return false;
+    /* Single module is stored directly; multiple modules as a frozen Array. */
+    if (RB_TYPE_P(memo->mods, T_ARRAY)) {
+        if (RARRAY_LEN(memo->mods) != argc) return false;
+        const VALUE *a = RARRAY_CONST_PTR(memo->mods);
+        for (long i = 0; i < argc; i++) {
+            if (a[i] != mods[i]) return false;
+        }
+    }
+    else {
+        if (argc != 1 || memo->mods != mods[0]) return false;
     }
     return true;
 }
@@ -303,9 +309,15 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
                               long argc, const VALUE *mods,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
-    VALUE mods_ary = rb_ary_new_from_values(argc, mods);
-    OBJ_FREEZE(mods_ary);
-    RB_OBJ_SET_SHAREABLE(mods_ary);
+    VALUE mods_val;
+    if (argc == 1) {
+        mods_val = mods[0];
+    }
+    else {
+        mods_val = rb_ary_new_from_values(argc, mods);
+        OBJ_FREEZE(mods_val);
+        RB_OBJ_SET_SHAREABLE(mods_val);
+    }
 
     VALUE memo_obj = rb_imemo_new(imemo_refinement_memo, 0,
                                   sizeof(struct rb_iseq_refinement_memo), true);
@@ -313,7 +325,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
         (struct rb_iseq_refinement_memo *)memo_obj;
 
     RB_OBJ_WRITE(memo_obj, &memo->base_cref, base_cref);
-    RB_OBJ_WRITE(memo_obj, &memo->mods, mods_ary);
+    RB_OBJ_WRITE(memo_obj, &memo->mods, mods_val);
     RB_OBJ_WRITE(memo_obj, &memo->copied_iseq, (VALUE)copied_iseq);
     RB_OBJ_WRITE(memo_obj, &memo->cref, (VALUE)cref);
 

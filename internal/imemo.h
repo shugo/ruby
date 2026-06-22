@@ -113,7 +113,7 @@ struct rb_imemo_cdhash {
 struct rb_iseq_refinement_memo {
     VALUE flags;
     VALUE base_cref;     /* key: captured cref of the source proc */
-    VALUE mods;          /* key: frozen Array of module objects */
+    VALUE mods;          /* key: module (argc=1) or frozen Array (argc>=2) */
     VALUE copied_iseq;   /* value: copied iseq with independent caches */
     VALUE cref;          /* value: cref with refinements activated */
 };
