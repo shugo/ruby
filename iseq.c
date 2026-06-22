@@ -305,6 +305,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
 {
     VALUE mods_ary = rb_ary_new_from_values(argc, mods);
     OBJ_FREEZE(mods_ary);
+    RB_OBJ_SET_SHAREABLE(mods_ary);
 
     VALUE memo_obj = rb_imemo_new(imemo_refinement_memo, 0,
                                   sizeof(struct rb_iseq_refinement_memo), true);
