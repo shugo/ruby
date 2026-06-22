@@ -252,14 +252,15 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
     const rb_cref_t *new_cref;
     /* Lock-free memo lookup (acquire load, no allocation, no lock needed on hit). */
     if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
-        /* Memo miss: create under lock.  Redundant copies on concurrent miss
-         * are harmless; the old imemo memo is reclaimed by GC. */
+        /* IBF round-trip is expensive; do it outside the lock. */
+        new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
+        /* rb_using_module_recursive modifies shared subclass lists,
+         * so cref setup and store must be under the VM lock. */
         RB_VM_LOCKING() {
             rb_cref_t *cref = rb_vm_cref_dup((const rb_cref_t *)base_cref);
             for (int i = 0; i < argc; i++) {
                 rb_using_module_recursive(cref, argv[i]);
             }
-            new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
             new_cref = cref;
             rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
         }
