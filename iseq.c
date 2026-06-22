@@ -279,7 +279,7 @@ iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
 }
 
 /* Lock-free lookup: acquire-load the memo pointer, read immutable fields.
- * No allocation on this path so it never triggers GC. */
+ * On a key hit, fill *iseq_out / *cref_out and return true; otherwise false. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
