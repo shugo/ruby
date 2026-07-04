@@ -1377,6 +1377,23 @@ eom
     end;
   end
 
+  def test_for_nested_multiple_target
+    bug22177 = '[ruby-core:125927] [Bug #22177]'
+    assert_valid_syntax("for (a, b), c in [] do end", __FILE__, bug22177)
+    assert_valid_syntax("for ((a, b), c), d in [] do end", __FILE__, bug22177)
+    assert_valid_syntax("for (a, b), *c in [] do end", __FILE__, bug22177)
+
+    assert_separately([], "#{<<~"begin;"}\n#{<<~'end;'}")
+    begin;
+      bug22177 = '[ruby-core:125927] [Bug #22177]'
+      for (a, b), c in [[[1, 2], 3]] do end
+      assert_equal([1, 2, 3], [a, b, c], bug22177)
+
+      for (a, b), *c in [[[1, 2], 3, 4]] do end
+      assert_equal([1, 2, [3, 4]], [a, b, c], bug22177)
+    end;
+  end
+
   def test_no_warning_logop_literal
     assert_warning("") do
       eval("true||raise;nil")
