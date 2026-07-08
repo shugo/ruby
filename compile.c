@@ -15183,8 +15183,9 @@ ibf_dump_iseq_table_collect_i(st_data_t key, st_data_t val, st_data_t arg)
  * NULL JIT payloads, coverage/original_iseq cleared, and threaded-code +
  * trace instrumentation reapplied.
  *
- * "subtree mode" lets us dump a nested block iseq (normally IBF only dumps top
- * iseqs).  References that point outside the dumped subtree (the enclosing
+ * "subtree mode" lets us start a dump from a nested block iseq (normally IBF
+ * starts from a top-level iseq, so all parent/local references are within the
+ * dump).  References that point outside the dumped subtree (the enclosing
  * method/top iseq, reachable via parent_iseq/local_iseq) are dumped as absent
  * and restored here from the source tree, so the copy shares the original
  * enclosing scope exactly as the captured environment does.
