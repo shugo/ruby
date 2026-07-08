@@ -5434,6 +5434,13 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
     const pm_for_comprehension_node_t *cast = (const pm_for_comprehension_node_t *) node;
     const pm_for_comprehension_iterator_node_t *iterator = (const pm_for_comprehension_iterator_node_t *) cast->iterators.nodes[position];
     bool last = (position + 1 == cast->iterators.size);
+
+    // The `then` (map) form nests flat_map/map; the `do` (each) form nests
+    // `each` for side effects. In both forms a `when` guard filters the
+    // collection the same way, matching Scala's `withFilter` for both the
+    // `yield` and side-effect forms. The form is recorded by the presence of
+    // the `then` keyword.
+    bool each = (cast->then_keyword_loc.start == NULL);
     const pm_node_location_t location = *node_location;
 
     // Compile the receiver of the chain: the iterator's collection, filtered
@@ -5454,8 +5461,9 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
         ISEQ_COMPILE_DATA(iseq)->current_block = prev_block;
     }
 
-    // Send flat_map (or map, for the last iterator), passing the rest of the
-    // comprehension (or the body, for the last iterator) as the block.
+    // Send each (do form), or flat_map / map (then form, for the last
+    // iterator), passing the rest of the comprehension (or the body, for the
+    // last iterator) as the block.
     pm_scope_node_t next_scope_node;
     pm_scope_node_init((const pm_node_t *) iterator, &next_scope_node, scope_node);
 
@@ -5470,9 +5478,11 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
     const rb_iseq_t *block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, location.line);
     pm_scope_node_destroy(&next_scope_node);
 
+    ID mid = each ? idEach : (last ? rb_intern("map") : rb_intern("flat_map"));
+
     const rb_iseq_t *prev_block = ISEQ_COMPILE_DATA(iseq)->current_block;
     ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq;
-    PUSH_SEND_WITH_BLOCK(ret, location, last ? rb_intern("map") : rb_intern("flat_map"), INT2FIX(0), block_iseq);
+    PUSH_SEND_WITH_BLOCK(ret, location, mid, INT2FIX(0), block_iseq);
     ISEQ_COMPILE_DATA(iseq)->current_block = prev_block;
 
     if (popped) PUSH_INSN(ret, location, pop);
