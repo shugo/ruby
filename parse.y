@@ -4680,15 +4680,15 @@ primary		: inline_primary
                      *    xs.filter {|x| x.even? }.flat_map {|x| ys.map {|y| f(x, y) } }
                      *
                      *  `do` (each form): the iterators become nested `each`
-                     *  calls for side effects; a `when` guard becomes an `if`.
-                     *  As with the legacy `for` loop the value is the first
-                     *  collection.  This form requires a guard or a second
-                     *  iterator (a plain `for x in xs do ... end` is the legacy
-                     *  loop):
+                     *  calls for side effects; a `when` guard filters with
+                     *  filter, the same as the map form (matching Scala, where
+                     *  a guard is withFilter with or without yield).  This form
+                     *  requires a guard or a second iterator (a plain
+                     *  `for x in xs do ... end` is the legacy loop):
                      *
                      *    for x in xs when x.even?, y in ys do f(x, y) end
                      *    #=>
-                     *    xs.each {|x| if x.even?; ys.each {|y| f(x, y) }; end }
+                     *    xs.filter {|x| x.even? }.each {|x| ys.each {|y| f(x, y) } }
                      *
                      *  The iterator expression is arg_value (not the legacy
                      *  expr_value) so the iterator-separating comma cannot be
@@ -11874,16 +11874,15 @@ dup_for_var(struct parser_params *p, NODE *var, const YYLTYPE *loc)
  *
  * `do` (each) form:
  *
- *   recv.each {|var| [if guard then] body [end] }
+ *   recv[.filter {|var| guard}].each {|var| body }
  *
  * The sends themselves are emitted by compile.c (compile_for_comp), like the
  * `each` send of the legacy `for` loop; the node carries the collection
- * expression and the pre-built block scopes.  In the map form a guard filters
- * recv before the flat_map/map, using a separate sibling filter block (so the
- * loop variable must be bound twice -- dup_for_var).  In the each form the
- * comprehension only nests `each` calls for side effects and a guard is
- * compiled as an `if` wrapping the block body, in the same block that binds
- * the loop variable, so no filter block (and no dup_for_var) is needed.
+ * expression and the pre-built block scopes.  A `when` guard filters recv the
+ * same way in both forms -- with a separate sibling filter block (so the loop
+ * variable is bound twice, hence dup_for_var), matching Scala's `withFilter`
+ * for both the `yield` and side-effect forms.  The two forms differ only in
+ * the send driving each iterator: flat_map/map (map form) vs each (each form).
  * `extra_ids` (the comprehension's temporaries, assigned in guards or the
  * body) goes into every synthesized block's table, so that a reference from
  * any of them resolves; the blocks are siblings, so each gets its own
@@ -11895,12 +11894,7 @@ build_for_iter(struct parser_params *p, NODE *var, NODE *recv, NODE *guard, NODE
     NODE *guard_scope = 0, *scope, *node;
 
     if (guard) {
-        if (is_each) {
-            body = NEW_IF(guard, body, 0, loc, &NULL_LOC, &NULL_LOC, &NULL_LOC);
-        }
-        else {
-            guard_scope = for_comp_scope(p, dup_for_var(p, var, loc), guard, extra_ids, extra_cnt, loc);
-        }
+        guard_scope = for_comp_scope(p, dup_for_var(p, var, loc), guard, extra_ids, extra_cnt, loc);
     }
     scope = for_comp_scope(p, var, body, extra_ids, extra_cnt, loc);
     node = NEW_FOR_COMP(recv, guard_scope, scope, is_last, is_each, loc);

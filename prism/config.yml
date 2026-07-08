@@ -2692,7 +2692,7 @@ nodes:
 
       is equivalent to:
 
-          xs.each { |x| ys.each { |y| f(x, y) if y > x } }
+          xs.each { |x| ys.filter { |y| y > x }.each { |y| f(x, y) } }
   - name: ForNode
     fields:
       - name: index

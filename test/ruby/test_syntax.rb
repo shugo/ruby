@@ -1447,12 +1447,18 @@ eom
     # the value is the first collection
     assert_equal([1, 2], r)
 
-    # a `when` guard becomes an `if` (skips the nested iteration)
+    # a `when` guard filters the iterator's collection, the same as the map
+    # form (matching Scala, where a guard is withFilter with or without yield)
     assert_equal([[1, 10], [3, 10]],
                  eval("acc = []; for x in [1, 2, 3] when x.odd?, y in [10] do acc << [x, y] end; acc"))
     # a single iterator with a guard is a valid each form
     assert_equal([2, 4],
                  eval("acc = []; for x in [1, 2, 3, 4] when x.even? do acc << x end; acc"))
+    # because the guard filters, the value is the filtered first collection
+    assert_equal([2, 4], eval("for x in [1, 2, 3, 4] when x.even? do end"))
+    # the guard runs in its own filter block, so a temporary assigned in it is
+    # not visible in the body (reads as nil) -- as in the map form
+    assert_equal([nil], eval("acc = []; for x in [1] when ((t = 9; true)), y in [2] do acc << t end; acc"))
     # a later iterator may reference an earlier loop variable
     assert_equal([[1, 10], [2, 20]],
                  eval("acc = []; for x in [1, 2], y in [x * 10] do acc << [x, y] end; acc"))
