@@ -11906,7 +11906,7 @@ build_for_iter(struct parser_params *p, NODE *var, NODE *recv, NODE *guard, NODE
 /* Fold a list of iterators (iters: a list of [var, expr] or [var, expr, guard]
  * sublists) plus the result body into nested flat_map/map calls for the `then`
  * form, or nested `each` calls for the `do` form.  A `when` guard becomes a
- * filter in both forms. */
+ * `filter` in both forms. */
 static NODE *
 for_comp_fold(struct parser_params *p, NODE *iters, NODE *result, int is_each, ID *extra_ids, int extra_cnt, const YYLTYPE *loc)
 {
