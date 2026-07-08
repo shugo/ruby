@@ -1435,10 +1435,10 @@ eom
   end
 
   def test_for_comprehension_do_each
-    # the `do` (each) form nests `each` for side effects; a guard becomes an
-    # `if` and the value is the first collection (like the legacy `for` loop).
-    # It requires a guard or a second iterator (a plain `for x in xs do ... end`
-    # is the legacy loop).
+    # the `do` (each) form nests `each` for side effects; the value is the
+    # first collection (like the legacy `for` loop) and a `when` guard filters
+    # it the same way as the map form. It requires a guard or a second iterator
+    # (a plain `for x in xs do ... end` is the legacy loop).
 
     # multiple iterators nest `each` in product order
     acc = []

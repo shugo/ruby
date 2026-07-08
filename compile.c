@@ -8586,10 +8586,10 @@ compile_for_comp(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
      *
      *   collection[.filter {|var| guard}].<flat_map|map> {|var| body }
      *
-     * `do` (each) form (a guard is compiled as an `if` in the block body by
-     * the parser, so there is no filter block here):
+     * `do` (each) form (a guard filters the same way, only the driving send
+     * differs):
      *
-     *   collection.each {|var| body }
+     *   collection[.filter {|var| guard}].each {|var| body }
      *
      * The block scopes are pre-built by the parser; only the sends are
      * emitted here, like the `each` send of NODE_FOR.  `break` is rejected

@@ -2675,9 +2675,8 @@ nodes:
                                  ^^^
     comment: |
       Represents a Scala-style for-comprehension, which flattens nested
-      `flat_map`/`map` (and `filter` for guards) calls in the `then` (map)
-      form, or nested `each` calls (with `filter` guards becoming `if`) in the
-      `do` (each) form.
+      `flat_map`/`map` calls in the `then` (map) form, or nested `each` calls
+      in the `do` (each) form. A `when` guard becomes a `filter` in both forms.
 
           for x in xs, y in ys when y > x then [x, y] end
           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

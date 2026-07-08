@@ -19480,9 +19480,11 @@ parse_for_comprehension(pm_parser_t *parser, uint8_t flags, const pm_token_t *fo
 
     // The body of the comprehension is introduced by its marker:
     //
-    //   `then` -> map form: nested flat_map/map (guards become filter).
-    //   `do` or a newline/`;` -> each form: nested `each` for side effects
-    //     (guards become `if`), like the legacy for loop.
+    //   `then` -> map form: nested flat_map/map.
+    //   `do` or a newline/`;` -> each form: nested `each` for side effects,
+    //     like the legacy for loop.
+    //
+    // In both forms a `when` guard filters the collection the same way.
     //
     // The each form is reachable only with a guard or a second iterator: a
     // plain `for x in xs do ... end` is the legacy loop and never enters this
