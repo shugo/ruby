@@ -3339,6 +3339,7 @@ pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_
         scope->pre_execution_anchor = NULL;
         scope->for_comp = NULL;
         scope->for_comp_position = 0;
+        scope->for_comp_guard = NULL;
     }
     else {
         memset(scope, 0, sizeof(pm_scope_node_t));
@@ -5434,13 +5435,19 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
     const pm_for_comprehension_node_t *cast = (const pm_for_comprehension_node_t *) node;
     const pm_for_comprehension_iterator_node_t *iterator = (const pm_for_comprehension_iterator_node_t *) cast->iterators.nodes[position];
     bool last = (position + 1 == cast->iterators.size);
+
+    // The `then` (map) form nests flat_map/map (guards become filter); the
+    // `do` (each) form nests `each` for side effects (guards become an `if`
+    // wrapping the block body, so there is no separate filter block). The
+    // form is recorded by the presence of the `then` keyword.
+    bool each = (cast->then_keyword_loc.start == NULL);
     const pm_node_location_t location = *node_location;
 
     // Compile the receiver of the chain: the iterator's collection, filtered
-    // by the guard if there is one.
+    // by the guard if there is one (map form only).
     pm_compile_node(iseq, iterator->collection, ret, false, scope_node);
 
-    if (iterator->guard != NULL) {
+    if (!each && iterator->guard != NULL) {
         pm_scope_node_t next_scope_node;
         pm_scope_node_init((const pm_node_t *) iterator, &next_scope_node, scope_node);
         next_scope_node.body = iterator->guard;
@@ -5454,8 +5461,10 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
         ISEQ_COMPILE_DATA(iseq)->current_block = prev_block;
     }
 
-    // Send flat_map (or map, for the last iterator), passing the rest of the
-    // comprehension (or the body, for the last iterator) as the block.
+    // Send each (do form), or flat_map / map (then form, for the last
+    // iterator), passing the rest of the comprehension (or the body, for the
+    // last iterator) as the block. In the each form a guard is compiled as an
+    // `if` wrapping that block's body.
     pm_scope_node_t next_scope_node;
     pm_scope_node_init((const pm_node_t *) iterator, &next_scope_node, scope_node);
 
@@ -5466,13 +5475,16 @@ pm_compile_for_comprehension(rb_iseq_t *iseq, const pm_node_t *node, size_t posi
         next_scope_node.for_comp = node;
         next_scope_node.for_comp_position = position + 1;
     }
+    if (each) next_scope_node.for_comp_guard = iterator->guard;
 
     const rb_iseq_t *block_iseq = NEW_CHILD_ISEQ(&next_scope_node, make_name_for_block(iseq), ISEQ_TYPE_BLOCK, location.line);
     pm_scope_node_destroy(&next_scope_node);
 
+    ID mid = each ? idEach : (last ? rb_intern("map") : rb_intern("flat_map"));
+
     const rb_iseq_t *prev_block = ISEQ_COMPILE_DATA(iseq)->current_block;
     ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq;
-    PUSH_SEND_WITH_BLOCK(ret, location, last ? rb_intern("map") : rb_intern("flat_map"), INT2FIX(0), block_iseq);
+    PUSH_SEND_WITH_BLOCK(ret, location, mid, INT2FIX(0), block_iseq);
     ISEQ_COMPILE_DATA(iseq)->current_block = prev_block;
 
     if (popped) PUSH_INSN(ret, location, pop);
@@ -7147,6 +7159,19 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
         PUSH_INSN(ret, block_location, nop);
         PUSH_LABEL(ret, start);
 
+        // A `do` (each) form for-comprehension iterator with a `when` guard
+        // compiles as `if guard then <body> end` in this block (there is no
+        // separate filter block, unlike the map form). Skip the body when the
+        // guard is false, yielding nil.
+        LABEL *for_comp_guard_else = NULL;
+        LABEL *for_comp_guard_end = NULL;
+        if (scope_node->for_comp_guard != NULL) {
+            for_comp_guard_else = NEW_LABEL(block_location.line);
+            for_comp_guard_end = NEW_LABEL(block_location.line);
+            pm_compile_node(iseq, scope_node->for_comp_guard, ret, false, scope_node);
+            PUSH_INSNL(ret, block_location, branchunless, for_comp_guard_else);
+        }
+
         if (scope_node->body != NULL) {
             switch (PM_NODE_TYPE(scope_node->ast_node)) {
               case PM_POST_EXECUTION_NODE: {
@@ -7180,6 +7205,13 @@ pm_compile_scope_node(rb_iseq_t *iseq, pm_scope_node_t *scope_node, const pm_nod
         }
         else {
             PUSH_INSN(ret, block_location, putnil);
+        }
+
+        if (scope_node->for_comp_guard != NULL) {
+            PUSH_INSNL(ret, block_location, jump, for_comp_guard_end);
+            PUSH_LABEL(ret, for_comp_guard_else);
+            if (!popped) PUSH_INSN(ret, block_location, putnil);
+            PUSH_LABEL(ret, for_comp_guard_end);
         }
 
         PUSH_LABEL(ret, end);

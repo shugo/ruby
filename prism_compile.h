@@ -163,6 +163,14 @@ typedef struct pm_scope_node {
      */
     const pm_node_t *for_comp;
     size_t for_comp_position;
+
+    /**
+     * When this scope is a block synthesized for a `do` (each) form
+     * for-comprehension iterator that has a `when` guard, this is the guard
+     * expression, compiled as `if guard then <body> end` wrapping the block
+     * body (the each form has no separate filter block). NULL otherwise.
+     */
+    const pm_node_t *for_comp_guard;
 } pm_scope_node_t;
 
 void pm_scope_node_init(const pm_node_t *node, pm_scope_node_t *scope, pm_scope_node_t *previous);

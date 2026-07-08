@@ -1078,7 +1078,7 @@ static rb_node_until_t *rb_node_until_new(struct parser_params *p, NODE *nd_cond
 static rb_node_iter_t *rb_node_iter_new(struct parser_params *p, rb_node_args_t *nd_args, NODE *nd_body, const YYLTYPE *loc);
 static rb_node_for_t *rb_node_for_new(struct parser_params *p, NODE *nd_iter, NODE *nd_body, const YYLTYPE *loc, const YYLTYPE *for_keyword_loc, const YYLTYPE *in_keyword_loc, const YYLTYPE *do_keyword_loc, const YYLTYPE *end_keyword_loc);
 static rb_node_for_masgn_t *rb_node_for_masgn_new(struct parser_params *p, NODE *nd_var, const YYLTYPE *loc);
-static rb_node_for_comp_t *rb_node_for_comp_new(struct parser_params *p, NODE *nd_iter, NODE *nd_guard, NODE *nd_body, long nd_last, const YYLTYPE *loc);
+static rb_node_for_comp_t *rb_node_for_comp_new(struct parser_params *p, NODE *nd_iter, NODE *nd_guard, NODE *nd_body, long nd_last, long nd_each, const YYLTYPE *loc);
 static rb_node_retry_t *rb_node_retry_new(struct parser_params *p, const YYLTYPE *loc);
 static rb_node_begin_t *rb_node_begin_new(struct parser_params *p, NODE *nd_body, const YYLTYPE *loc);
 static rb_node_rescue_t *rb_node_rescue_new(struct parser_params *p, NODE *nd_head, NODE *nd_resq, NODE *nd_else, const YYLTYPE *loc);
@@ -1187,7 +1187,7 @@ static rb_node_error_t *rb_node_error_new(struct parser_params *p, const YYLTYPE
 #define NEW_ITER(a,b,loc) (NODE *)rb_node_iter_new(p,a,b,loc)
 #define NEW_FOR(i,b,loc,f_loc,i_loc,d_loc,e_loc) (NODE *)rb_node_for_new(p,i,b,loc,f_loc,i_loc,d_loc,e_loc)
 #define NEW_FOR_MASGN(v,loc) (NODE *)rb_node_for_masgn_new(p,v,loc)
-#define NEW_FOR_COMP(i,g,b,l,loc) (NODE *)rb_node_for_comp_new(p,i,g,b,l,loc)
+#define NEW_FOR_COMP(i,g,b,l,e,loc) (NODE *)rb_node_for_comp_new(p,i,g,b,l,e,loc)
 #define NEW_RETRY(loc) (NODE *)rb_node_retry_new(p,loc)
 #define NEW_BEGIN(b,loc) (NODE *)rb_node_begin_new(p,b,loc)
 #define NEW_RESCUE(b,res,e,loc) (NODE *)rb_node_rescue_new(p,b,res,e,loc)
@@ -1460,7 +1460,7 @@ static NODE *attrset(struct parser_params*,NODE*,ID,ID,const YYLTYPE*);
 static VALUE rb_backref_error(struct parser_params*,NODE*);
 static NODE *node_assign(struct parser_params*,NODE*,NODE*,struct lex_context,const YYLTYPE*);
 
-static NODE *new_for_comprehension(struct parser_params *p, NODE *first_var, NODE *first_expr, NODE *first_guard, NODE *iters, NODE *result, const YYLTYPE *loc);
+static NODE *new_for_comprehension(struct parser_params *p, NODE *first_var, NODE *first_expr, NODE *first_guard, NODE *iters, NODE *result, int is_each, const YYLTYPE *loc);
 struct for_cond_mark;
 static int for_comp_var_base(struct parser_params *p);
 static void for_comp_relocate(struct parser_params *p, NODE *var, int base, const struct for_cond_mark *mark);
@@ -2722,6 +2722,11 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
         const struct node_buffer_elem_struct *elem;
         long len;
     } node_mark;
+    struct for_comp_tail {
+        NODE *guard;   /* leading `when` guard, or NULL */
+        NODE *iters;   /* extra ", var in expr [when guard]" iterators, or NULL */
+        int each;      /* 1: `do` each form, 0: `then` map form */
+    } for_comp_tail;
     struct rb_strterm_struct *strterm;
     struct lex_context ctxt;
     enum lex_state_e state;
@@ -2820,7 +2825,7 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <node_args_aux> f_arg f_arg_item
 %type <node> f_marg f_rest_marg
 %type <node_masgn> f_margs
-%type <node> assoc_list assocs assoc undef_list backref string_dvar for_var for_iters for_guard
+%type <node> assoc_list assocs assoc undef_list backref string_dvar for_var for_iters for_iters1 for_guard
 %type <node_args> block_param opt_block_param_def block_param_def opt_block_param
 %type <id> do bv_decls opt_bv_decl bvar
 %type <node> lambda brace_body do_body
@@ -2842,7 +2847,8 @@ rb_parser_ary_free(rb_parser_t *p, rb_parser_ary_t *ary)
 %type <ctxt> lex_ctxt begin_defined k_class k_module k_END k_rescue k_ensure after_rescue
 %type <ctxt> p_in_kwarg
 %type <tbl>  p_lparen p_lbracket p_pktbl p_pvtbl
-%type <num>  max_numparam for_var_base
+%type <num>  max_numparam for_var_base for_comp_mark
+%type <for_comp_tail> for_comp_rest
 %type <node_mark> for_cond_push
 %type <node> numparam
 %type <id>   it_id
@@ -4637,6 +4643,13 @@ primary		: inline_primary
                      * reject_comprehension_break); k_for's allow_exits had set
                      * p->exits = 0 for the shared `for` prefix. */
                     init_block_exit(p);
+                    /* Keep COND active over the rest of the comprehension (the
+                     * guard, later iterators and the body marker) so a `do`
+                     * marker of the each form lexes as keyword_do_cond rather
+                     * than opening a block on the last iterator's collection,
+                     * as in the legacy `for ... do` loop.  Balanced by the
+                     * COND_POP in for_comp_rest / for_comp_mark. */
+                    COND_PUSH(1);
                 }[dyna]<vars>
               max_numparam numparam it_id
                 {
@@ -4649,19 +4662,33 @@ primary		: inline_primary
                      * A nested block in the body resets this around itself. */
                     p->max_numparam = ORDINAL_PARAM;
                 }
-              for_guard[for_guard]
-              for_iters[for_iters] keyword_then
+              for_comp_rest[for_comp_rest]
               compstmt(stmts)[compstmt]
               k_end[k_end]
                 {
                     /*
-                     *  Scala-style comprehension. Each iterator but the last
-                     *  becomes flat_map, the last becomes map; a `when` guard
-                     *  becomes a filter:
+                     *  Scala-style comprehension.  Two forms, selected by the
+                     *  body marker after the iterators:
                      *
-                     *  for x in xs when x.even?, y in ys then f(x, y) end
-                     *  #=>
-                     *  xs.filter {|x| x.even? }.flat_map {|x| ys.map {|y| f(x, y) } }
+                     *  `then` (map form): each iterator but the last becomes
+                     *  flat_map, the last becomes map; a `when` guard becomes a
+                     *  filter.  The comprehension is an expression whose value
+                     *  is the mapped collection:
+                     *
+                     *    for x in xs when x.even?, y in ys then f(x, y) end
+                     *    #=>
+                     *    xs.filter {|x| x.even? }.flat_map {|x| ys.map {|y| f(x, y) } }
+                     *
+                     *  `do` (each form): the iterators become nested `each`
+                     *  calls for side effects; a `when` guard becomes an `if`.
+                     *  As with the legacy `for` loop the value is the first
+                     *  collection.  This form requires a guard or a second
+                     *  iterator (a plain `for x in xs do ... end` is the legacy
+                     *  loop):
+                     *
+                     *    for x in xs when x.even?, y in ys do f(x, y) end
+                     *    #=>
+                     *    xs.each {|x| if x.even?; ys.each {|y| f(x, y) }; end }
                      *
                      *  The iterator expression is arg_value (not the legacy
                      *  expr_value) so the iterator-separating comma cannot be
@@ -4669,7 +4696,8 @@ primary		: inline_primary
                      *  list; a command-call expression must be parenthesized.
                      *
                      *  The loop variables are scoped to the synthesized blocks
-                     *  (they do not leak), unlike the legacy `for` loop.
+                     *  (they do not leak), unlike the legacy `for` loop -- in
+                     *  both forms.
                      *
                      *  `break` is rejected: in the desugaring it would escape
                      *  only one synthesized block, not the whole comprehension.
@@ -4678,11 +4706,11 @@ primary		: inline_primary
                     p->it_id = $it_id;
                     reject_comprehension_break(p);
                     restore_block_exit(p, $k_for);
-                    $$ = new_for_comprehension(p, $for_var, $expr_value, $for_guard, $for_iters, $compstmt, &@$);
+                    $$ = new_for_comprehension(p, $for_var, $expr_value, $for_comp_rest.guard, $for_comp_rest.iters, $compstmt, $for_comp_rest.each, &@$);
                     numparam_pop(p, $numparam);
                     dyna_pop(p, $dyna);
                     fixpos($$, $for_var);
-                /*% ripper: [$:for_var, $:expr_value, $:for_guard, $:for_iters, $:compstmt] %*/
+                /*% ripper: [$:for_var, $:expr_value, $:for_comp_rest, $:compstmt] %*/
                 }
             | k_class cpath superclass
                 {
@@ -5051,6 +5079,53 @@ for_guard	: /* none */
                     }
                 ;
 
+/* The tail of a comprehension after the shared "for var in collection" prefix:
+ * an optional leading `when` guard and extra iterators, ended by the body
+ * marker (`then` for the map form, `do`/newline for the each form).
+ *
+ * The three alternatives have disjoint FIRST sets ({then}, {when}, {`,`}), so
+ * the parser commits to a comprehension (rather than the legacy `for` loop)
+ * purely on the token following the first collection -- the legacy loop takes
+ * over on `do`/newline there.  The `do` each-form marker is therefore reachable
+ * only after a leading guard or a second iterator has been seen; a bare
+ * `for x in xs do ... end` is always the legacy loop.
+ *
+ * COND (pushed at the comprehension commit) is popped here / in for_comp_mark,
+ * once the body marker has been lexed. */
+for_comp_rest	: keyword_then
+                    {
+                        COND_POP();
+                        $$.guard = 0; $$.iters = 0; $$.each = 0;
+                    /*% ripper: rb_ary_new_from_args(3, Qnil, rb_ary_new, Qfalse) %*/
+                    }
+                | keyword_when arg_value[guard] for_iters[iters] for_comp_mark[each]
+                    {
+                        $$.guard = $guard; $$.iters = $iters; $$.each = $each;
+                    /*% ripper: rb_ary_new_from_args(3, $:guard, $:iters, $:each) %*/
+                    }
+                | for_iters1[iters] for_comp_mark[each]
+                    {
+                        $$.guard = 0; $$.iters = $iters; $$.each = $each;
+                    /*% ripper: rb_ary_new_from_args(3, Qnil, $:iters, $:each) %*/
+                    }
+                ;
+
+/* The comprehension body marker: `then` (map form) or `do`/newline (each
+ * form).  Value is 1 for the each form, 0 for the map form. */
+for_comp_mark	: keyword_then
+                    {
+                        COND_POP();
+                        $$ = 0;
+                    /*% ripper: Qfalse %*/
+                    }
+                | do
+                    {
+                        COND_POP();
+                        $$ = 1;
+                    /*% ripper: Qtrue %*/
+                    }
+                ;
+
 /* Zero or more extra ", var in expr [when guard]" iterators of a comprehension,
  * collected as a list of [var, expr] / [var, expr, guard] sublists. */
 for_iters	: /* none */
@@ -5058,7 +5133,18 @@ for_iters	: /* none */
                         $$ = 0;
                     /*% ripper: rb_ary_new %*/
                     }
-                | for_iters[iters] ',' for_var[var] keyword_in arg_value[expr] for_guard[guard]
+                | for_iters1
+                ;
+
+/* One or more extra iterators (the non-empty case of for_iters). */
+for_iters1	: ',' for_var[var] keyword_in arg_value[expr] for_guard[guard]
+                    {
+                        NODE *g = list_append(p, NEW_LIST($var, &@var), $expr);
+                        if ($guard) g = list_append(p, g, $guard);
+                        $$ = NEW_LIST(g, &@$);
+                    /*% ripper: rb_ary_new_from_args(1, rb_ary_new_from_args(3, $:var, $:expr, $:guard)) %*/
+                    }
+                | for_iters1[iters] ',' for_var[var] keyword_in arg_value[expr] for_guard[guard]
                     {
                         NODE *g = list_append(p, NEW_LIST($var, &@var), $expr);
                         if ($guard) g = list_append(p, g, $guard);
@@ -11469,13 +11555,14 @@ rb_node_for_masgn_new(struct parser_params *p, NODE *nd_var, const YYLTYPE *loc)
 }
 
 static rb_node_for_comp_t *
-rb_node_for_comp_new(struct parser_params *p, NODE *nd_iter, NODE *nd_guard, NODE *nd_body, long nd_last, const YYLTYPE *loc)
+rb_node_for_comp_new(struct parser_params *p, NODE *nd_iter, NODE *nd_guard, NODE *nd_body, long nd_last, long nd_each, const YYLTYPE *loc)
 {
     rb_node_for_comp_t *n = NODE_NEWNODE(NODE_FOR_COMP, rb_node_for_comp_t, loc);
     n->nd_iter = nd_iter;
     n->nd_guard = nd_guard;
     n->nd_body = nd_body;
     n->nd_last = nd_last;
+    n->nd_each = nd_each;
 
     return n;
 }
@@ -11779,39 +11866,55 @@ dup_for_var(struct parser_params *p, NODE *var, const YYLTYPE *loc)
     }
 }
 
-/* Build one comprehension iterator with an optional guard, as a NODE_FOR_COMP:
+/* Build one comprehension iterator with an optional guard, as a NODE_FOR_COMP.
+ *
+ * `then` (map) form:
  *
  *   recv[.filter {|var| guard}].<flat_map|map> {|var| body }
  *
+ * `do` (each) form:
+ *
+ *   recv.each {|var| [if guard then] body [end] }
+ *
  * The sends themselves are emitted by compile.c (compile_for_comp), like the
  * `each` send of the legacy `for` loop; the node carries the collection
- * expression and the pre-built block scopes.  A guard filters recv before the
- * flat_map/map.  The last iterator uses map, every earlier one uses flat_map.
+ * expression and the pre-built block scopes.  In the map form a guard filters
+ * recv before the flat_map/map, using a separate sibling filter block (so the
+ * loop variable must be bound twice -- dup_for_var).  In the each form the
+ * comprehension only nests `each` calls for side effects and a guard is
+ * compiled as an `if` wrapping the block body, in the same block that binds
+ * the loop variable, so no filter block (and no dup_for_var) is needed.
  * `extra_ids` (the comprehension's temporaries, assigned in guards or the
  * body) goes into every synthesized block's table, so that a reference from
  * any of them resolves; the blocks are siblings, so each gets its own
- * binding.  The loop variable is bound in both the guard's and the body's
- * block, which needs two copies of the assignment node (dup_for_var). */
+ * binding. */
 static NODE *
 build_for_iter(struct parser_params *p, NODE *var, NODE *recv, NODE *guard, NODE *body,
-              int is_last, ID *extra_ids, int extra_cnt, const YYLTYPE *loc)
+              int is_last, int is_each, ID *extra_ids, int extra_cnt, const YYLTYPE *loc)
 {
     NODE *guard_scope = 0, *scope, *node;
 
     if (guard) {
-        guard_scope = for_comp_scope(p, dup_for_var(p, var, loc), guard, extra_ids, extra_cnt, loc);
+        if (is_each) {
+            body = NEW_IF(guard, body, 0, loc, &NULL_LOC, &NULL_LOC, &NULL_LOC);
+        }
+        else {
+            guard_scope = for_comp_scope(p, dup_for_var(p, var, loc), guard, extra_ids, extra_cnt, loc);
+        }
     }
     scope = for_comp_scope(p, var, body, extra_ids, extra_cnt, loc);
-    node = NEW_FOR_COMP(recv, guard_scope, scope, is_last, loc);
+    node = NEW_FOR_COMP(recv, guard_scope, scope, is_last, is_each, loc);
     if (guard_scope) RNODE_SCOPE(guard_scope)->nd_parent = node;
     RNODE_SCOPE(scope)->nd_parent = node;
     return node;
 }
 
 /* Fold a list of iterators (iters: a list of [var, expr] or [var, expr, guard]
- * sublists) plus the result body into nested flat_map/map (and filter) calls. */
+ * sublists) plus the result body into nested flat_map/map (and filter) calls
+ * for the `then` form, or nested `each` calls (guards become `if`) for the
+ * `do` form. */
 static NODE *
-for_comp_fold(struct parser_params *p, NODE *iters, NODE *result, ID *extra_ids, int extra_cnt, const YYLTYPE *loc)
+for_comp_fold(struct parser_params *p, NODE *iters, NODE *result, int is_each, ID *extra_ids, int extra_cnt, const YYLTYPE *loc)
 {
     NODE *sub = RNODE_LIST(iters)->nd_head;
     NODE *rest = RNODE_LIST(iters)->nd_next;
@@ -11822,11 +11925,11 @@ for_comp_fold(struct parser_params *p, NODE *iters, NODE *result, ID *extra_ids,
     NODE *guard = gnode ? RNODE_LIST(gnode)->nd_head : 0;
 
     if (rest == 0) {
-        return build_for_iter(p, var, expr, guard, result, TRUE, extra_ids, extra_cnt, loc);
+        return build_for_iter(p, var, expr, guard, result, TRUE, is_each, extra_ids, extra_cnt, loc);
     }
     else {
-        NODE *inner = for_comp_fold(p, rest, result, extra_ids, extra_cnt, loc);
-        return build_for_iter(p, var, expr, guard, inner, FALSE, extra_ids, extra_cnt, loc);
+        NODE *inner = for_comp_fold(p, rest, result, is_each, extra_ids, extra_cnt, loc);
+        return build_for_iter(p, var, expr, guard, inner, FALSE, is_each, extra_ids, extra_cnt, loc);
     }
 }
 
@@ -11854,7 +11957,7 @@ for_comp_collect_loop_ids(struct parser_params *p, NODE *all, ID *ids)
 }
 
 static NODE *
-new_for_comprehension(struct parser_params *p, NODE *first_var, NODE *first_expr, NODE *first_guard, NODE *iters, NODE *result, const YYLTYPE *loc)
+new_for_comprehension(struct parser_params *p, NODE *first_var, NODE *first_expr, NODE *first_guard, NODE *iters, NODE *result, int is_each, const YYLTYPE *loc)
 {
     NODE *first = list_append(p, NEW_LIST(first_var, loc), first_expr);
     NODE *all, *tree;
@@ -11890,7 +11993,7 @@ new_for_comprehension(struct parser_params *p, NODE *first_var, NODE *first_expr
         if (!seen) body_ids[body_cnt++] = vid;
     }
 
-    tree = for_comp_fold(p, all, result, body_ids, body_cnt, loc);
+    tree = for_comp_fold(p, all, result, is_each, body_ids, body_cnt, loc);
     xfree(loop_ids);
     xfree(body_ids);
     return tree;

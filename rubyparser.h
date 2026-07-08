@@ -352,8 +352,9 @@ typedef struct RNode_FOR_COMP {
 
     struct RNode *nd_iter;   /* collection expression (the receiver) */
     struct RNode *nd_guard;  /* NODE_SCOPE for the filter block, or NULL */
-    struct RNode *nd_body;   /* NODE_SCOPE for the map/flat_map block */
-    long nd_last;            /* 1: innermost iterator (map), 0: flat_map */
+    struct RNode *nd_body;   /* NODE_SCOPE for the map/flat_map/each block */
+    long nd_last;            /* 1: innermost iterator (map), 0: flat_map (ignored when nd_each) */
+    long nd_each;            /* 1: `do` each-nesting form (each), 0: `then` map form */
 } rb_node_for_comp_t;
 
 typedef struct RNode_EXITS {

@@ -174,14 +174,23 @@ module Prism
           locals << names
 
           if node.comprehension.nil?
-            # A guard's filter block: its body is the guard expression.
+            # A map-form guard's filter block: its body is the guard expression.
             stack << node.iterator.guard
-          elsif node.position + 1 < node.comprehension.iterators.length
-            # The block's body is the next iterator's send chain.
-            stack.concat(for_comp_children(node.comprehension, node.position + 1))
-          elsif node.comprehension.statements
-            # The innermost block: its body is the user statements.
-            stack << node.comprehension.statements
+          else
+            # The each (`do`) form has no separate filter block: a guard is
+            # compiled as an `if` inside this block, so its body (any nested
+            # blocks) is a child of this block too.
+            if node.comprehension.then_keyword_loc.nil? && node.iterator.guard
+              stack << node.iterator.guard
+            end
+
+            if node.position + 1 < node.comprehension.iterators.length
+              # The block's body is the next iterator's send chain.
+              stack.concat(for_comp_children(node.comprehension, node.position + 1))
+            elsif node.comprehension.statements
+              # The innermost block: its body is the user statements.
+              stack << node.comprehension.statements
+            end
           end
           next
         end
@@ -300,7 +309,10 @@ module Prism
     def for_comp_children(node, position)
       iterator = node.iterators[position]
       children = [iterator.collection]
-      children << ForCompScope.new(iterator, nil, nil) if iterator.guard
+      # Only the map (`then`) form compiles a guard into a separate filter
+      # block; the each (`do`) form compiles it as an `if` inside the
+      # iterator's own block (handled where ForCompScope is processed).
+      children << ForCompScope.new(iterator, nil, nil) if iterator.guard && node.then_keyword_loc
       children << ForCompScope.new(iterator, node, position)
       children
     end

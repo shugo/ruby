@@ -15,3 +15,13 @@ for x in xs,
   z = x + y
   [x, y, z]
 end
+
+for x in xs, y in ys do f(x, y) end
+
+for x in xs when x.even?, y in ys when x < y do f(x, y) end
+
+for x in xs when x.even? do f(x) end
+
+for x in xs, y in ys
+  f(x, y)
+end

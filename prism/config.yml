@@ -2636,7 +2636,9 @@ nodes:
         type: node?
         kind: StatementsNode
         comment: |
-          The body of the comprehension; its value becomes the mapped element.
+          The body of the comprehension; in the `then` (map) form its value
+          becomes the mapped element, in the `do` (each) form it is evaluated
+          for its side effects.
 
               for x in xs then x * 2 end
                                ^^^^^
@@ -2648,12 +2650,22 @@ nodes:
               for x in xs then x end
               ^^^
       - name: then_keyword_loc
-        type: location
+        type: location?
         comment: |
-          The Location of the `then` keyword.
+          The Location of the `then` keyword in the map form. Absent in the
+          each (`do`) form.
 
               for x in xs then x end
                           ^^^^
+      - name: do_keyword_loc
+        type: location?
+        comment: |
+          The Location of the `do` keyword in the each form, if written
+          explicitly. Absent in the map (`then`) form and when the each form
+          uses a newline instead of `do`.
+
+              for x in xs, y in ys do x end
+                                   ^^
       - name: end_keyword_loc
         type: location
         comment: |
@@ -2663,14 +2675,24 @@ nodes:
                                  ^^^
     comment: |
       Represents a Scala-style for-comprehension, which flattens nested
-      `flat_map`/`map` (and `filter` for guards) calls.
+      `flat_map`/`map` (and `filter` for guards) calls in the `then` (map)
+      form, or nested `each` calls (with `filter` guards becoming `if`) in the
+      `do` (each) form.
 
           for x in xs, y in ys when y > x then [x, y] end
           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-      This is equivalent to:
+      The map form above is equivalent to:
 
           xs.flat_map { |x| ys.filter { |y| y > x }.map { |y| [x, y] } }
+
+      The each form:
+
+          for x in xs, y in ys when y > x do f(x, y) end
+
+      is equivalent to:
+
+          xs.each { |x| ys.each { |y| f(x, y) if y > x } }
   - name: ForNode
     fields:
       - name: index

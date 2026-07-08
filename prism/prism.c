@@ -19418,7 +19418,13 @@ parse_for_comprehension(pm_parser_t *parser, uint8_t flags, const pm_token_t *fo
 
         if (accept1(parser, PM_TOKEN_KEYWORD_WHEN)) {
             when_keyword = parser->previous;
+            // Parse the guard as a loop condition so that a `do` marker of the
+            // each form directly after it lexes as a loop `do` (keyword_do_loop)
+            // rather than opening a block on the guard expression, as after the
+            // iterator's collection.
+            pm_do_loop_stack_push(parser, true);
             guard = parse_value_expression(parser, PM_BINDING_POWER_COMPOSITION, (uint8_t) (flags & PM_PARSE_ACCEPTS_DO_BLOCK), PM_ERR_FOR_COMP_GUARD, (uint16_t) (depth + 1));
+            pm_do_loop_stack_pop(parser);
         }
 
         const pm_node_t *last = (guard != NULL) ? guard : collection;
@@ -19472,13 +19478,30 @@ parse_for_comprehension(pm_parser_t *parser, uint8_t flags, const pm_token_t *fo
         parse_for_comp_bind(parser, index, base, false, &iterator_locals);
     }
 
-    // The body of the comprehension is marked by `then`, which must follow
-    // the last iterator on the same line (a newline before `then` would be
-    // ambiguous with the legacy for loop in parse.y's LALR grammar, so it is
-    // rejected there; we reject it too so both parsers accept the same
-    // programs).
-    expect1(parser, PM_TOKEN_KEYWORD_THEN, PM_ERR_FOR_COMP_EXPECT_THEN);
-    pm_token_t then_keyword = parser->previous;
+    // The body of the comprehension is introduced by its marker:
+    //
+    //   `then` -> map form: nested flat_map/map (guards become filter).
+    //   `do` or a newline/`;` -> each form: nested `each` for side effects
+    //     (guards become `if`), like the legacy for loop.
+    //
+    // The each form is reachable only with a guard or a second iterator: a
+    // plain `for x in xs do ... end` is the legacy loop and never enters this
+    // function (the dispatch requires a `when`, `,`, or `then` after the first
+    // collection).  So there is no need to gate the each marker here.
+    //
+    // A `then` must follow the last iterator on the same line (a newline before
+    // `then` is the each form, not a then form -- matching parse.y, where a
+    // newline before `then` is a reduce/reduce conflict with the legacy loop).
+    pm_token_t then_keyword = { 0 };
+    pm_token_t do_keyword = { 0 };
+
+    if (accept1(parser, PM_TOKEN_KEYWORD_THEN)) {
+        then_keyword = parser->previous;
+    } else if (accept1(parser, PM_TOKEN_KEYWORD_DO_LOOP)) {
+        do_keyword = parser->previous;
+    } else if (!match2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON)) {
+        expect1(parser, PM_TOKEN_KEYWORD_THEN, PM_ERR_FOR_COMP_EXPECT_THEN);
+    }
 
     pm_statements_node_t *statements = NULL;
     if (!match1(parser, PM_TOKEN_KEYWORD_END)) {
@@ -19526,7 +19549,8 @@ parse_for_comprehension(pm_parser_t *parser, uint8_t flags, const pm_token_t *fo
         iterators,
         statements,
         TOK2LOC(parser, for_keyword),
-        TOK2LOC(parser, &then_keyword),
+        NTOK2LOC(parser, NTOK2PTR(then_keyword)),
+        NTOK2LOC(parser, NTOK2PTR(do_keyword)),
         TOK2LOC(parser, &end_keyword)
     ));
 }

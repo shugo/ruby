@@ -8580,9 +8580,16 @@ compile_iter(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, in
 static int
 compile_for_comp(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node, int popped)
 {
-    /* One for-comprehension iterator (see NODE_FOR_COMP in parse.y):
+    /* One for-comprehension iterator (see NODE_FOR_COMP in parse.y).
+     *
+     * `then` (map) form:
      *
      *   collection[.filter {|var| guard}].<flat_map|map> {|var| body }
+     *
+     * `do` (each) form (a guard is compiled as an `if` in the block body by
+     * the parser, so there is no filter block here):
+     *
+     *   collection.each {|var| body }
      *
      * The block scopes are pre-built by the parser; only the sends are
      * emitted here, like the `each` send of NODE_FOR.  `break` is rejected
@@ -8591,6 +8598,8 @@ compile_for_comp(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
     const NODE *line_node = node;
     const rb_iseq_t *prevblock = ISEQ_COMPILE_DATA(iseq)->current_block;
     const rb_iseq_t *block_iseq;
+    const int is_each = RNODE_FOR_COMP(node)->nd_each;
+    ID mid;
 
     CHECK(COMPILE(ret, "for-comp collection", RNODE_FOR_COMP(node)->nd_iter));
 
@@ -8604,9 +8613,13 @@ compile_for_comp(rb_iseq_t *iseq, LINK_ANCHOR *const ret, const NODE *const node
     ISEQ_COMPILE_DATA(iseq)->current_block = block_iseq =
         NEW_CHILD_ISEQ(RNODE_FOR_COMP(node)->nd_body, make_name_for_block(iseq),
                        ISEQ_TYPE_BLOCK, line);
-    ADD_SEND_WITH_BLOCK(ret, line_node,
-                        RNODE_FOR_COMP(node)->nd_last ? rb_intern("map") : rb_intern("flat_map"),
-                        INT2FIX(0), block_iseq);
+    if (is_each) {
+        mid = idEach;
+    }
+    else {
+        mid = RNODE_FOR_COMP(node)->nd_last ? rb_intern("map") : rb_intern("flat_map");
+    }
+    ADD_SEND_WITH_BLOCK(ret, line_node, mid, INT2FIX(0), block_iseq);
 
     if (popped) {
         ADD_INSN(ret, line_node, pop);

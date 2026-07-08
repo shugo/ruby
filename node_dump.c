@@ -369,8 +369,9 @@ dump_node(VALUE buf, VALUE indent, int comment, const NODE * node)
 
       case NODE_FOR_COMP:
         ANN("for-comprehension iterator");
-        ANN("format: [nd_iter][.filter { [nd_guard] }].<flat_map|map(nd_last)> { [nd_body] }");
+        ANN("format: [nd_iter][.filter { [nd_guard] }].<flat_map|map(nd_last)|each(nd_each)> { [nd_body] }");
         ANN("example: for x in xs when x.even?, y in ys then [x, y] end");
+        F_LONG(nd_each, RNODE_FOR_COMP, "each form (do) instead of map form (then)");
         F_LONG(nd_last, RNODE_FOR_COMP, "last iterator (map instead of flat_map)");
         F_NODE(nd_iter, RNODE_FOR_COMP, "collection");
         F_NODE(nd_guard, RNODE_FOR_COMP, "guard block");

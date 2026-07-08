@@ -1434,6 +1434,60 @@ eom
     assert_equal("one", eval("for x in [1] do break(case x when 1 then 'one' end) end"))
   end
 
+  def test_for_comprehension_do_each
+    # the `do` (each) form nests `each` for side effects; a guard becomes an
+    # `if` and the value is the first collection (like the legacy `for` loop).
+    # It requires a guard or a second iterator (a plain `for x in xs do ... end`
+    # is the legacy loop).
+
+    # multiple iterators nest `each` in product order
+    acc = []
+    r = eval("acc = #{acc.inspect}; for x in [1, 2], y in [3, 4] do acc << [x, y] end")
+    assert_equal([[1, 3], [1, 4], [2, 3], [2, 4]], eval("acc"))
+    # the value is the first collection
+    assert_equal([1, 2], r)
+
+    # a `when` guard becomes an `if` (skips the nested iteration)
+    assert_equal([[1, 10], [3, 10]],
+                 eval("acc = []; for x in [1, 2, 3] when x.odd?, y in [10] do acc << [x, y] end; acc"))
+    # a single iterator with a guard is a valid each form
+    assert_equal([2, 4],
+                 eval("acc = []; for x in [1, 2, 3, 4] when x.even? do acc << x end; acc"))
+    # a later iterator may reference an earlier loop variable
+    assert_equal([[1, 10], [2, 20]],
+                 eval("acc = []; for x in [1, 2], y in [x * 10] do acc << [x, y] end; acc"))
+    # destructuring loop variables
+    assert_equal([[1, 2, 0], [3, 4, 0]],
+                 eval("acc = []; for (a, b) in [[1, 2], [3, 4]], c in [0] do acc << [a, b, c] end; acc"))
+
+    # an implicit `do` (newline instead of `do`) works too
+    src = "acc = []\nfor x in [1, 2], y in [5, 6]\n  acc << [x, y]\nend\nacc"
+    assert_equal([[1, 5], [1, 6], [2, 5], [2, 6]], eval(src))
+
+    # `next` skips the innermost iteration; the each form ignores block values
+    assert_equal([[1, 20], [2, 20]],
+                 eval("acc = []; for x in [1, 2], y in [10, 20] do next if y == 10; acc << [x, y] end; acc"))
+
+    # loop variables do not leak (unlike the legacy `for` loop)
+    assert_nil(eval("for x in [1], y in [2] do end; defined?(x) || defined?(y)"))
+
+    # a plain single-iterator `do` is the legacy loop (leaks, returns collection)
+    assert_equal("local-variable", eval("for x in [1, 2, 3] do end; defined?(x)"))
+    assert_equal([7, 8, 9], eval("for w in [7, 8, 9] do end"))
+  end
+
+  def test_for_comprehension_do_each_break_not_allowed
+    # `break` is rejected in the each form as well, on both parsers
+    msg = /Invalid break in for-comprehension/
+    %w[parse.y prism].each do |parser|
+      assert_in_out_err(["--parser=#{parser}", "-e", "for x in [1], y in [2] do break end"], "", [], msg)
+    end
+    assert_raise(SyntaxError) { eval("for x in [1, 2], y in [3] do break end") }
+    assert_raise(SyntaxError) { eval("for x in [1] when (break; true), y in [2] do 0 end") }
+    # next and redo keep ordinary block semantics
+    assert_equal([2], eval("acc = []; for x in [1, 2], y in [3] do next if x == 1; acc << x end; acc"))
+  end
+
   def test_for_comprehension_does_not_break_for_loop
     # the legacy `for` loop is unchanged: it iterates and returns the collection
     a = [1, 2, 3]
