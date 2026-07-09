@@ -254,16 +254,18 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
     if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
         /* IBF round-trip is expensive; do it outside the lock. */
         new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
-        /* rb_using_module_recursive modifies shared subclass lists,
-         * so cref setup and store must be under the VM lock. */
+        rb_cref_t *cref = rb_vm_cref_dup((const rb_cref_t *)base_cref);
+        /* rb_using_module_recursive modifies shared subclass lists via
+         * rb_class_subclass_add, so it must run under the VM lock.  cref
+         * duplication and the memo store touch only local/atomic state, so
+         * they stay outside the lock to keep the critical section minimal. */
         RB_VM_LOCKING() {
-            rb_cref_t *cref = rb_vm_cref_dup((const rb_cref_t *)base_cref);
             for (int i = 0; i < argc; i++) {
                 rb_using_module_recursive(cref, argv[i]);
             }
-            new_cref = cref;
-            rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
         }
+        new_cref = cref;
+        rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
     return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
