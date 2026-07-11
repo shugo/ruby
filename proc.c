@@ -282,6 +282,9 @@ proc_mark_and_move(void *ptr)
 const rb_cref_t *
 rb_proc_refinements_cref(VALUE procval)
 {
+    rb_proc_t *proc;
+    GetProcPtr(procval, proc);
+    if (!proc->is_refined) return NULL;
     return (const rb_cref_t *)rb_ivar_get(procval, id_refinements_cref);
 }
 
@@ -1486,7 +1489,7 @@ rb_proc_call_kw(VALUE self, VALUE args, int kw_splat)
     GetProcPtr(self, proc);
     vret = rb_vm_invoke_proc(GET_EC(), proc, argc, argv,
                              kw_splat, VM_BLOCK_HANDLER_NONE,
-                             proc->is_refined ? rb_proc_refinements_cref(self) : NULL);
+                             rb_proc_refinements_cref(self));
     RB_GC_GUARD(self);
     RB_GC_GUARD(args);
     return vret;
@@ -1512,7 +1515,7 @@ rb_proc_call_with_block_kw(VALUE self, int argc, const VALUE *argv, VALUE passed
     rb_proc_t *proc;
     GetProcPtr(self, proc);
     vret = rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, proc_to_block_handler(passed_procval),
-                             proc->is_refined ? rb_proc_refinements_cref(self) : NULL);
+                             rb_proc_refinements_cref(self));
     RB_GC_GUARD(self);
     return vret;
 }

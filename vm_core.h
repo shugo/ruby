@@ -1350,7 +1350,8 @@ typedef struct {
 
 /* Proc#refined: the refinement cref lives in a hidden ivar on the
  * proc object, gated by rb_proc_t::is_refined.  rb_proc_refinements_cref
- * assumes the bit is set (callers check it on the fast path). */
+ * returns NULL unless the bit is set, so callers may use it unguarded;
+ * hot paths still pre-check is_refined to skip the call entirely. */
 const rb_cref_t *rb_proc_refinements_cref(VALUE procval);
 void rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref);
 

@@ -291,7 +291,7 @@ vm_call0_body(rb_execution_context_t *ec, struct rb_calling_info *calling, const
                 rb_proc_t *proc;
                 GetProcPtr(calling->recv, proc);
                 ret = rb_vm_invoke_proc(ec, proc, calling->argc, argv, calling->kw_splat, calling->block_handler,
-                                        proc->is_refined ? rb_proc_refinements_cref(calling->recv) : NULL);
+                                        rb_proc_refinements_cref(calling->recv));
                 goto success;
             }
           case OPTIMIZED_METHOD_TYPE_STRUCT_AREF:
