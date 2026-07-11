@@ -1456,7 +1456,7 @@ using_refinement(VALUE klass, VALUE module, VALUE arg)
  * Activate the refinements of \a klass (a module, or an ancestor of one during
  * recursion) in \a cref, without flushing the global refinement method caches.
  * rb_using_module wraps this with the flush, which is needed when \a cref is
- * already associated with live call sites.  Proc#with_refinements uses this
+ * already associated with live call sites.  Proc#refined uses this
  * directly because it builds a fresh cref that no call site references yet.
  */
 void

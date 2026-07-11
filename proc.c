@@ -79,7 +79,7 @@ block_mark_and_move(struct rb_block *block)
 }
 
 /* Hidden (Ruby-invisible) instance-variable id holding a refinement proc's
- * cref; see Proc#with_refinements. */
+ * cref; see Proc#refined. */
 static ID id_refinements_cref;
 
 static void
@@ -101,7 +101,7 @@ rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref)
     rb_proc_t *proc;
     GetProcPtr(procval, proc);
     rb_ivar_set(procval, id_refinements_cref, (VALUE)cref);
-    proc->has_refinements = 1;
+    proc->is_refined = 1;
 }
 
 typedef struct {
@@ -171,7 +171,7 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
 
 /*
  * call-seq:
- *   prc.with_refinements(mod, ...) -> a_proc
+ *   prc.refined(mod, ...) -> a_proc
  *
  * Returns a new Proc that behaves like the receiver but with the refinements
  * activated by the given modules in effect inside its body.  The receiver is
@@ -184,9 +184,9 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  *   end
  *
  *   original = ->(s) { s.shout }
- *   refined = original.with_refinements(StringRefinement)
- *   refined.call("hi")     #=> "HI!"
- *   original.call("hi")    #=> NoMethodError
+ *   refined_proc = original.refined(StringRefinement)
+ *   refined_proc.call("hi")  #=> "HI!"
+ *   original.call("hi")      #=> NoMethodError
  *
  * Only Procs created from a Ruby block are supported; calling this on a Proc
  * backed by a C function, a Symbol, or a method raises ArgumentError.
@@ -195,21 +195,21 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  * method also raises ArgumentError.  To activate the refinements of multiple
  * modules, pass them all in a single call:
  *
- *   refined = original.with_refinements(StringRefinement, OtherRefinement)
+ *   refined_proc = original.refined(StringRefinement, OtherRefinement)
  *
  * The refinements are in effect throughout the body, including nested blocks
  * and methods defined with +def+ inside it.  As with a +def+ inside a +using+
  * scope, such a method keeps the refinements even when it is called later:
  *
- *   refined = ->(s) {
+ *   refined_proc = ->(s) {
  *     -> { s.shout }.call          # nested block: "HI!"
- *   }.with_refinements(StringRefinement)
+ *   }.refined(StringRefinement)
  *
- *   refined = -> {
+ *   refined_proc = -> {
  *     obj = Object.new
  *     def obj.shout_hi = "hi".shout  # the method sees the refinement
  *     obj.shout_hi                   #=> "HI!"
- *   }.with_refinements(StringRefinement)
+ *   }.refined(StringRefinement)
  *
  * This method copies the instruction sequence of the block and of all of its
  * nested blocks so that the copy can resolve methods through the refinements
@@ -218,7 +218,7 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  * copy is cached and reused for the same receiver and the same modules.
  */
 static VALUE
-proc_with_refinements(int argc, VALUE *argv, VALUE self)
+proc_refined(int argc, VALUE *argv, VALUE self)
 {
     rb_proc_t *src;
     GetProcPtr(self, src);
@@ -237,7 +237,7 @@ proc_with_refinements(int argc, VALUE *argv, VALUE self)
      * precedence questions that are better avoided (pass all modules in one
      * call instead).  Rejecting now also keeps the option open to give chaining
      * a meaning later without breaking compatibility. */
-    if (src->has_refinements) {
+    if (src->is_refined) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc that already has refinements");
     }
 
@@ -1284,7 +1284,7 @@ rb_proc_call_kw(VALUE self, VALUE args, int kw_splat)
     GetProcPtr(self, proc);
     vret = rb_vm_invoke_proc(GET_EC(), proc, argc, argv,
                              kw_splat, VM_BLOCK_HANDLER_NONE,
-                             proc->has_refinements ? rb_proc_refinements_cref(self) : NULL);
+                             proc->is_refined ? rb_proc_refinements_cref(self) : NULL);
     RB_GC_GUARD(self);
     RB_GC_GUARD(args);
     return vret;
@@ -1310,7 +1310,7 @@ rb_proc_call_with_block_kw(VALUE self, int argc, const VALUE *argv, VALUE passed
     rb_proc_t *proc;
     GetProcPtr(self, proc);
     vret = rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, proc_to_block_handler(passed_procval),
-                             proc->has_refinements ? rb_proc_refinements_cref(self) : NULL);
+                             proc->is_refined ? rb_proc_refinements_cref(self) : NULL);
     RB_GC_GUARD(self);
     return vret;
 }
@@ -2621,12 +2621,12 @@ rb_mod_define_method_with_visibility(int argc, VALUE *argv, VALUE mod, const str
     else {
         rb_proc_t *body_proc;
         GetProcPtr(body, body_proc);
-        /* A Proc#with_refinements proc resolves methods against the refinement
+        /* A Proc#refined proc resolves methods against the refinement
          * cref carried on the proc object, but a bmethod is invoked against its
          * method entry and never reads that cref, so the refinements would
          * silently not take effect.  Reject it rather than define a method whose
          * refinements are dropped. */
-        if (body_proc->has_refinements) {
+        if (body_proc->is_refined) {
             rb_raise(rb_eArgError,
                      "can't define a method from a Proc with refinements");
         }
@@ -4811,7 +4811,7 @@ Init_Proc(void)
     rb_define_method(rb_cProc, "arity", proc_arity, 0);
     rb_define_method(rb_cProc, "clone", proc_clone, 0);
     rb_define_method(rb_cProc, "dup", proc_dup, 0);
-    rb_define_method(rb_cProc, "with_refinements", proc_with_refinements, -1);
+    rb_define_method(rb_cProc, "refined", proc_refined, -1);
     rb_define_method(rb_cProc, "hash", proc_hash, 0);
     rb_define_method(rb_cProc, "to_s", proc_to_s, 0);
     rb_define_alias(rb_cProc, "inspect", "to_s");

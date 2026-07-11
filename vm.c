@@ -1354,7 +1354,7 @@ rb_proc_dup(VALUE self)
         break;
     }
 
-    if (src->has_refinements) {
+    if (src->is_refined) {
         rb_proc_set_refinements_cref(procval, rb_proc_refinements_cref(self));
     }
 
@@ -1367,7 +1367,7 @@ rb_proc_dup(VALUE self)
  * iseq) sharing `self`'s receiver and environment, but carrying `cref` as its
  * refinement cref.  The cref is injected into the frame at every proc-invocation
  * path so refinements take effect while the closure environment stays shared.
- * Used by Proc#with_refinements.  Never marked shareable because the cref
+ * Used by Proc#refined.  Never marked shareable because the cref
  * may reference non-shareable refinements. */
 VALUE
 rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref)
@@ -1874,7 +1874,7 @@ invoke_block_from_c_bh(rb_execution_context_t *ec, VALUE block_handler,
             VALUE procval = VM_BH_TO_PROC(block_handler);
             rb_proc_t *po;
             GetProcPtr(procval, po);
-            if (po->has_refinements) cref = rb_proc_refinements_cref(procval); /* into the block frame */
+            if (po->is_refined) cref = rb_proc_refinements_cref(procval); /* into the block frame */
             if (force_blockarg == FALSE) {
                 is_lambda = po->is_lambda;
             }
@@ -1985,11 +1985,11 @@ vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
                      int argc, const VALUE *argv, int kw_splat, VALUE block_handler, const rb_callable_method_entry_t *me)
 {
     /* bmethod procs are invoked against the method entry, not the proc's cref,
-     * and with_refinements rejects them, so there is never a cref here. */
+     * and Proc#refined rejects them, so there is never a cref here. */
     return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, block_handler, TRUE, NULL, me);
 }
 
-/* `cref` carries a Proc#with_refinements refinement cref (or NULL); callers
+/* `cref` carries a Proc#refined refinement cref (or NULL); callers
  * that have the proc VALUE compute it via rb_proc_refinements_cref. */
 VALUE
 rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc,

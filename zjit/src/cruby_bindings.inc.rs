@@ -1423,18 +1423,18 @@ impl rb_proc_t {
         }
     }
     #[inline]
-    pub fn has_refinements(&self) -> ::std::os::raw::c_uint {
+    pub fn is_refined(&self) -> ::std::os::raw::c_uint {
         unsafe { ::std::mem::transmute(self._bitfield_1.get(3usize, 1u8) as u32) }
     }
     #[inline]
-    pub fn set_has_refinements(&mut self, val: ::std::os::raw::c_uint) {
+    pub fn set_is_refined(&mut self, val: ::std::os::raw::c_uint) {
         unsafe {
             let val: u32 = ::std::mem::transmute(val);
             self._bitfield_1.set(3usize, 1u8, val as u64)
         }
     }
     #[inline]
-    pub unsafe fn has_refinements_raw(this: *const Self) -> ::std::os::raw::c_uint {
+    pub unsafe fn is_refined_raw(this: *const Self) -> ::std::os::raw::c_uint {
         unsafe {
             ::std::mem::transmute(<__BindgenBitfieldUnit<[u8; 1usize]>>::raw_get(
                 ::std::ptr::addr_of!((*this)._bitfield_1),
@@ -1444,7 +1444,7 @@ impl rb_proc_t {
         }
     }
     #[inline]
-    pub unsafe fn set_has_refinements_raw(this: *mut Self, val: ::std::os::raw::c_uint) {
+    pub unsafe fn set_is_refined_raw(this: *mut Self, val: ::std::os::raw::c_uint) {
         unsafe {
             let val: u32 = ::std::mem::transmute(val);
             <__BindgenBitfieldUnit<[u8; 1usize]>>::raw_set(
@@ -1460,7 +1460,7 @@ impl rb_proc_t {
         is_from_method: ::std::os::raw::c_uint,
         is_lambda: ::std::os::raw::c_uint,
         is_isolated: ::std::os::raw::c_uint,
-        has_refinements: ::std::os::raw::c_uint,
+        is_refined: ::std::os::raw::c_uint,
     ) -> __BindgenBitfieldUnit<[u8; 1usize]> {
         let mut __bindgen_bitfield_unit: __BindgenBitfieldUnit<[u8; 1usize]> = Default::default();
         __bindgen_bitfield_unit.set(0usize, 1u8, {
@@ -1476,8 +1476,8 @@ impl rb_proc_t {
             is_isolated as u64
         });
         __bindgen_bitfield_unit.set(3usize, 1u8, {
-            let has_refinements: u32 = unsafe { ::std::mem::transmute(has_refinements) };
-            has_refinements as u64
+            let is_refined: u32 = unsafe { ::std::mem::transmute(is_refined) };
+            is_refined as u64
         });
         __bindgen_bitfield_unit
     }

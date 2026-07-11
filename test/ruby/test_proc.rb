@@ -500,7 +500,7 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
-  module WithRefinementsModule
+  module RefinementsModule
     refine String do
       def shout = upcase + "!"
     end
@@ -509,9 +509,9 @@ class TestProc < Test::Unit::TestCase
     end
   end
 
-  def test_with_refinements
+  def test_refined
     orig = ->(s) { s.shout }
-    refined = orig.with_refinements(WithRefinementsModule)
+    refined = orig.refined(RefinementsModule)
     assert_equal("HI!", refined.call("hi"))
     # the original Proc is unaffected
     assert_raise(NoMethodError) { orig.call("hi") }
@@ -519,41 +519,41 @@ class TestProc < Test::Unit::TestCase
     assert_equal("HI!", refined.call("hi"))
   end
 
-  def test_with_refinements_nested_block
+  def test_refined_nested_block
     orig = ->(a) { a.map { |s| s.shout } }
-    refined = orig.with_refinements(WithRefinementsModule)
+    refined = orig.refined(RefinementsModule)
     assert_equal(["A!", "B!"], refined.call(["a", "b"]))
     assert_raise(NoMethodError) { orig.call(["a"]) }
   end
 
-  def test_with_refinements_multiple_modules
-    refined = ->(s, n) { "#{s.shout}#{n.tripled}" }.with_refinements(WithRefinementsModule)
+  def test_refined_multiple_modules
+    refined = ->(s, n) { "#{s.shout}#{n.tripled}" }.refined(RefinementsModule)
     assert_equal("A!6", refined.call("a", 2))
   end
 
-  def test_with_refinements_shares_environment
+  def test_refined_shares_environment
     counter = 0
     inc = -> { counter += 1 }
-    refined = inc.with_refinements(WithRefinementsModule)
+    refined = inc.refined(RefinementsModule)
     refined.call
     inc.call
     # the closure environment is shared with the original Proc
     assert_equal(2, counter)
   end
 
-  def test_with_refinements_via_yield
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+  def test_refined_via_yield
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
     result = [].tap {|a| [1, 2].each {|i| a << refined.call("x#{i}") } }
     assert_equal(["X1!", "X2!"], result)
 
     forwarded = []
-    rr = ->(s) { forwarded << s.shout }.with_refinements(WithRefinementsModule)
+    rr = ->(s) { forwarded << s.shout }.refined(RefinementsModule)
     %w[p q].each(&rr)
     assert_equal(["P!", "Q!"], forwarded)
   end
 
-  def test_with_refinements_via_c_call_paths
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+  def test_refined_via_c_call_paths
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
     # These reach the proc via the C invocation path (rb_vm_invoke_proc) rather
     # than the optimized opt_call, so the refinement cref must be carried there.
     assert_equal("A!", refined.send(:call, "a"))
@@ -562,8 +562,8 @@ class TestProc < Test::Unit::TestCase
     assert_equal("D!", Thread.new("d", &refined).value)
   end
 
-  def test_with_refinements_instance_eval
-    refined = proc { self.shout }.with_refinements(WithRefinementsModule)
+  def test_refined_instance_eval
+    refined = proc { self.shout }.refined(RefinementsModule)
     assert_equal("HI!", "hi".instance_eval(&refined))
     assert_equal("HI!", "hi".instance_exec(&refined))
     # the original Proc is still unaffected via instance_eval
@@ -571,27 +571,27 @@ class TestProc < Test::Unit::TestCase
     assert_raise(NoMethodError) { "hi".instance_eval(&orig) }
   end
 
-  def test_with_refinements_module_eval
-    refined = proc { "ok".shout }.with_refinements(WithRefinementsModule)
+  def test_refined_module_eval
+    refined = proc { "ok".shout }.refined(RefinementsModule)
     klass = Class.new
     assert_equal("OK!", klass.class_eval(&refined))
   end
 
-  def test_with_refinements_instance_eval_does_not_leak_refinements
+  def test_refined_instance_eval_does_not_leak_refinements
     # instance_eval/class_eval gets its own copy of the refinements hash, so a
     # `using` inside must not mutate the cref shared by every derived proc.
-    refined = proc { "ok".shout }.with_refinements(WithRefinementsModule)
+    refined = proc { "ok".shout }.refined(RefinementsModule)
     Class.new.class_eval(&refined)
     # a second proc derived from the same source iseq still sees the refinement
-    again = proc { "ok".shout }.with_refinements(WithRefinementsModule)
+    again = proc { "ok".shout }.refined(RefinementsModule)
     assert_equal("OK!", Class.new.class_eval(&again))
   end
 
-  def test_with_refinements_once_regexp
+  def test_refined_once_regexp
     # A /o (once) regexp literal interpolating a refined-method call must be
     # built under the refinement, and the copy's once cache is independent of
     # the source iseq's (which may be mid-flight or already completed).
-    refined = ->(s) { /\A#{s.shout}\z/o }.with_refinements(WithRefinementsModule)
+    refined = ->(s) { /\A#{s.shout}\z/o }.refined(RefinementsModule)
     r1 = refined.call("ab")
     assert_equal('\AAB!\z', r1.source)
     # /o caches the first regexp on the copy's own once entry
@@ -600,27 +600,27 @@ class TestProc < Test::Unit::TestCase
     assert_raise(NoMethodError) { ->(s) { /\A#{s.shout}\z/o }.call("ab") }
   end
 
-  def test_with_refinements_preserved_by_dup
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+  def test_refined_preserved_by_dup
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
     assert_equal("Z!", refined.dup.call("z"))
   end
 
-  def test_with_refinements_errors
-    assert_raise(ArgumentError) { ->(s) { s }.with_refinements }
-    assert_raise(TypeError) { ->(s) { s }.with_refinements(42) }
+  def test_refined_errors
+    assert_raise(ArgumentError) { ->(s) { s }.refined }
+    assert_raise(TypeError) { ->(s) { s }.refined(42) }
     # non-iseq Procs are not supported
-    assert_raise(ArgumentError) { :upcase.to_proc.with_refinements(WithRefinementsModule) }
-    assert_raise(ArgumentError) { method(:p).to_proc.with_refinements(WithRefinementsModule) }
+    assert_raise(ArgumentError) { :upcase.to_proc.refined(RefinementsModule) }
+    assert_raise(ArgumentError) { method(:p).to_proc.refined(RefinementsModule) }
   end
 
-  def test_with_refinements_non_main_ractor
+  def test_refined_non_main_ractor
     assert_separately([], <<~'RUBY')
       Warning[:experimental] = false
       module M1; refine(String) { def shout = upcase + "!" }; end
       module M2; refine(String) { def shout = downcase }; end
       ractors = 10.times.map { |i|
         Ractor.new(i) { |i|
-          ->(s) { s.shout }.with_refinements(i.even? ? M1 : M2).call("Hi")
+          ->(s) { s.shout }.refined(i.even? ? M1 : M2).call("Hi")
         }
       }
       values = ractors.map(&:value)
@@ -628,23 +628,23 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
-  def test_with_refinements_chain_rejected
+  def test_refined_chain_rejected
     # Chaining would need merge-or-replace semantics for the refinement sets;
-    # both are confusing, so a refined proc rejects further with_refinements.
+    # both are confusing, so a refined proc rejects further refined.
     # Multiple modules can be activated by passing them in a single call.
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
-    assert_raise(ArgumentError) { refined.with_refinements(WithRefinementsModule2) }
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
+    assert_raise(ArgumentError) { refined.refined(RefinementsModule2) }
     # the refinement state survives dup, so the dup is rejected too
-    assert_raise(ArgumentError) { refined.dup.with_refinements(WithRefinementsModule2) }
+    assert_raise(ArgumentError) { refined.dup.refined(RefinementsModule2) }
     # the receiver remains usable
     assert_equal("HI!", refined.call("hi"))
   end
 
-  def test_with_refinements_rejected_by_define_method
+  def test_refined_rejected_by_define_method
     # A bmethod is invoked against its method entry, not the proc's refinement
-    # cref, so defining a method from a with_refinements proc would silently drop
+    # cref, so defining a method from a refined proc would silently drop
     # the refinements; it is rejected instead.
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
     assert_raise(ArgumentError) { Class.new { define_method(:m, refined) } }
     assert_raise(ArgumentError) { Class.new { define_method(:m, &refined) } }
     assert_raise(ArgumentError) { Object.new.define_singleton_method(:m, refined) }
@@ -653,53 +653,53 @@ class TestProc < Test::Unit::TestCase
   # Each refinement module refines only one class so the nested test below can
   # tell apart the refinement added on the inner Proc (String) from the one
   # inherited from the enclosing refined Proc (Integer).
-  module WithRefinementsStringOnly
+  module RefinementsStringOnly
     refine String do
       def shout = upcase + "!"
     end
   end
 
-  module WithRefinementsIntegerOnly
+  module RefinementsIntegerOnly
     refine Integer do
       def doubled = self * 2
     end
   end
 
-  def test_with_refinements_nested_proc_is_not_a_chain
-    # A Proc created lexically INSIDE a with_refinements Proc is not itself "a
+  def test_refined_nested_proc_is_not_a_chain
+    # A Proc created lexically INSIDE a refined Proc is not itself "a
     # Proc that already has refinements": it only inherits the enclosing
-    # refinements lexically.  with_refinements (and define_method) must therefore
+    # refinements lexically.  refined (and define_method) must therefore
     # be accepted on it, and the inner Proc must see both the enclosing
-    # refinement and the one it adds.  Only the Proc returned by with_refinements
+    # refinement and the one it adds.  Only the Proc returned by refined
     # is rejected for chaining.
     result = -> {
       inner = ->(s, n) { [s.shout, n.doubled] }
-      inner.with_refinements(WithRefinementsStringOnly).call("hi", 3)
-    }.with_refinements(WithRefinementsIntegerOnly).call
-    # WithRefinementsStringOnly is added on the inner copy; WithRefinementsIntegerOnly
+      inner.refined(RefinementsStringOnly).call("hi", 3)
+    }.refined(RefinementsIntegerOnly).call
+    # RefinementsStringOnly is added on the inner copy; RefinementsIntegerOnly
     # is inherited from the enclosing refined Proc.
     assert_equal(["HI!", 6], result)
 
     # define_method from such a nested Proc is allowed (it is not the
-    # with_refinements result itself).
+    # refined result itself).
     assert_nothing_raised do
-      -> { Class.new { define_method(:m, ->(s) { s }) } }.with_refinements(WithRefinementsIntegerOnly).call
+      -> { Class.new { define_method(:m, ->(s) { s }) } }.refined(RefinementsIntegerOnly).call
     end
   end
 
-  def test_with_refinements_gc
+  def test_refined_gc
     assert_normal_exit(<<~RUBY)
       module M
         refine(String) { def shout = upcase + "!" }
       end
-      procs = 100.times.map { |i| ->(s) { s.shout } .with_refinements(M) }
+      procs = 100.times.map { |i| ->(s) { s.shout } .refined(M) }
       GC.start
       GC.compact rescue nil
       procs.each { |pr| raise "bad" unless pr.call("a") == "A!" }
     RUBY
   end
 
-  def test_with_refinements_gc_stress
+  def test_refined_gc_stress
     # Under GC.stress, the memo store allocates its module array while the memo
     # is reachable from the iseq; a GC during that allocation must not observe a
     # half-initialized memo (argc set but mods not yet allocated).  Alternating
@@ -711,13 +711,13 @@ class TestProc < Test::Unit::TestCase
       orig = ->(s) { s.shout }
       r = nil
       GC.stress = true
-      6.times { |i| r = orig.with_refinements(i.even? ? M1 : M2) }
+      6.times { |i| r = orig.refined(i.even? ? M1 : M2) }
       GC.stress = false
       raise "bad" unless r.call("Hi") == "hi"
     RUBY
   end
 
-  def test_with_refinements_iseq_to_binary
+  def test_refined_iseq_to_binary
     # The memo shares a body slot with mandatory_only_iseq (discriminated by
     # iseq type); a block iseq that carries a memo must still serialize cleanly
     # (the memo is transient and dumped as absent).
@@ -725,59 +725,59 @@ class TestProc < Test::Unit::TestCase
       module M
         refine(String) { def shout = upcase + "!" }
       end
-      src = 'x = ->(s) { s.shout }; x.with_refinements(M).call("hi")'
+      src = 'x = ->(s) { s.shout }; x.refined(M).call("hi")'
       iseq = RubyVM::InstructionSequence.compile(src)
-      eval(src) # runs with_refinements, setting the memo on the block iseq
+      eval(src) # runs refined, setting the memo on the block iseq
       bin = iseq.to_binary
       loaded = RubyVM::InstructionSequence.load_from_binary(bin)
       assert_equal("HI!", loaded.eval)
     RUBY
   end
 
-  module WithRefinementsModule2
+  module RefinementsModule2
     refine String do
       def shout = "?"
     end
   end
 
-  def test_with_refinements_memoized
+  def test_refined_memoized
     orig = ->(s) { s.shout }
     # Repeating the same (proc, modules) reuses the cached copy but stays correct.
-    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
-    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.refined(RefinementsModule).call("hi"))
+    assert_equal("HI!", orig.refined(RefinementsModule).call("hi"))
     # A different module set must not return the previously cached copy.
-    assert_equal("?", orig.with_refinements(WithRefinementsModule2).call("hi"))
+    assert_equal("?", orig.refined(RefinementsModule2).call("hi"))
     # ...and switching back is still correct.
-    assert_equal("HI!", orig.with_refinements(WithRefinementsModule).call("hi"))
+    assert_equal("HI!", orig.refined(RefinementsModule).call("hi"))
   end
 
-  def test_with_refinements_memo_distinct_environments
+  def test_refined_memo_distinct_environments
     # Procs sharing the same block iseq but capturing different closure
     # environments hit the same memo entry (env is not part of the key), yet each
     # result must keep its own environment.
     factory = ->(tag) { ->(s) { "#{tag}:#{s.shout}" } }
     p1 = factory.call("A")
     p2 = factory.call("B")
-    r1 = p1.with_refinements(WithRefinementsModule)
-    r2 = p2.with_refinements(WithRefinementsModule)
+    r1 = p1.refined(RefinementsModule)
+    r2 = p2.refined(RefinementsModule)
     assert_equal("A:X!", r1.call("x"))
     assert_equal("B:Y!", r2.call("y"))
     # the original closures still see their own captured tag too
     assert_equal("A:X!", r1.call("x"))
   end
 
-  def test_with_refinements_memo_avoids_recopy
+  def test_refined_memo_avoids_recopy
     orig = ->(s) { s.shout }
-    orig.with_refinements(WithRefinementsModule) # warm the memo
+    orig.refined(RefinementsModule) # warm the memo
     GC.disable
     begin
       before = GC.stat(:total_allocated_objects)
-      100.times { orig.with_refinements(WithRefinementsModule) }
+      100.times { orig.refined(RefinementsModule) }
       hits = GC.stat(:total_allocated_objects) - before
 
       before = GC.stat(:total_allocated_objects)
       100.times do |i|
-        orig.with_refinements(i.even? ? WithRefinementsModule : WithRefinementsModule2)
+        orig.refined(i.even? ? RefinementsModule : RefinementsModule2)
       end
       misses = GC.stat(:total_allocated_objects) - before
     ensure
@@ -788,7 +788,7 @@ class TestProc < Test::Unit::TestCase
                     "expected memo hits (#{hits}) to allocate much less than misses (#{misses})")
   end
 
-  def test_with_refinements_rescue_ensure
+  def test_refined_rescue_ensure
     # exercises the copied catch table and shared rescue local table
     refined = ->(s) {
       r = nil
@@ -800,11 +800,11 @@ class TestProc < Test::Unit::TestCase
         r = "#{r}."
       end
       r
-    }.with_refinements(WithRefinementsModule)
+    }.refined(RefinementsModule)
     assert_equal("YO!.", refined.call("yo"))
   end
 
-  def test_with_refinements_def_in_block
+  def test_refined_def_in_block
     # a literal def inside the block creates a nested method iseq whose
     # local_iseq is itself (in-subtree); the copy must rebuild it.
     # Specified behavior: like a def inside a `using` scope, a method defined
@@ -814,19 +814,19 @@ class TestProc < Test::Unit::TestCase
       o = Object.new
       def o.m = "hi".shout
       [s.shout, o.m]
-    }.with_refinements(WithRefinementsModule)
+    }.refined(RefinementsModule)
     assert_equal(["YO!", "HI!"], refined.call("yo"))
   end
 
-  def test_with_refinements_keyword_and_optional_args
+  def test_refined_keyword_and_optional_args
     refined = ->(a, b = "z", c:, d: "w") {
       [a, b, c, d].map(&:shout).join
-    }.with_refinements(WithRefinementsModule)
+    }.refined(RefinementsModule)
     assert_equal("A!Z!C!W!", refined.call("a", c: "c"))
     assert_equal("A!B!C!D!", refined.call("a", "b", c: "c", d: "d"))
   end
 
-  def test_with_refinements_case_when_literal
+  def test_refined_case_when_literal
     # literal when-clauses compile to a CDHASH operand that must round-trip
     refined = ->(s) {
       case s.shout
@@ -834,13 +834,13 @@ class TestProc < Test::Unit::TestCase
       when "B!" then 2
       else 0
       end
-    }.with_refinements(WithRefinementsModule)
+    }.refined(RefinementsModule)
     assert_equal(1, refined.call("a"))
     assert_equal(2, refined.call("b"))
     assert_equal(0, refined.call("c"))
   end
 
-  def test_with_refinements_flip_flop
+  def test_refined_flip_flop
     # flip-flop allocates a special-variable slot keyed off the local iseq;
     # the copy must run its own flip state independent of the original
     body = ->(arr) {
@@ -848,21 +848,21 @@ class TestProc < Test::Unit::TestCase
       arr.each { |i| out << i if (i == 2)..(i == 4) }
       out
     }
-    refined = body.with_refinements(WithRefinementsModule)
+    refined = body.refined(RefinementsModule)
     assert_equal([2, 3, 4], refined.call([1, 2, 3, 4, 5]))
     # a second call starts from a fresh flip state
     assert_equal([2, 3, 4], refined.call([1, 2, 3, 4, 5]))
   end
 
-  def test_with_refinements_preserves_location_and_parameters
+  def test_refined_preserves_location_and_parameters
     orig = ->(a, b = 1, *c, d:, **e, &f) { a }
-    refined = orig.with_refinements(WithRefinementsModule)
+    refined = orig.refined(RefinementsModule)
     assert_equal(orig.source_location, refined.source_location)
     assert_equal(orig.parameters, refined.parameters)
     assert_equal(orig.arity, refined.arity)
   end
 
-  module WithRefinementsOperators
+  module RefinementsOperators
     refine Integer do
       def +(other) = "plus(#{self},#{other})"
       def <(other) = "lt"
@@ -872,64 +872,64 @@ class TestProc < Test::Unit::TestCase
     end
   end
 
-  def test_with_refinements_operators
+  def test_refined_operators
     # Specialized instructions (opt_plus, opt_lt, opt_aref, ...) must honor the
     # refinement on the copy without leaking it into the original Proc.
-    refined = ->(a, b) { [a + b, a < b] }.with_refinements(WithRefinementsOperators)
+    refined = ->(a, b) { [a + b, a < b] }.refined(RefinementsOperators)
     assert_equal(["plus(1,2)", "lt"], refined.call(1, 2))
-    aref = ->(a) { a[0] }.with_refinements(WithRefinementsOperators)
+    aref = ->(a) { a[0] }.refined(RefinementsOperators)
     assert_equal("at0", aref.call([9]))
     # the original Procs keep using the builtin operators
     assert_equal(3, ->(a, b) { a + b }.call(1, 2))
   end
 
-  def test_with_refinements_preserves_lambda
+  def test_refined_preserves_lambda
     # The copy must keep the receiver's lambda/proc nature, including a lambda's
     # strict argument checking.
-    lam = ->(a, b) { [a, b] }.with_refinements(WithRefinementsModule)
+    lam = ->(a, b) { [a, b] }.refined(RefinementsModule)
     assert_equal(true, lam.lambda?)
     assert_raise(ArgumentError) { lam.call(1) }
-    pr = proc { |a, b| [a, b] }.with_refinements(WithRefinementsModule)
+    pr = proc { |a, b| [a, b] }.refined(RefinementsModule)
     assert_equal(false, pr.lambda?)
     # proc argument handling fills missing parameters with nil instead of raising
     assert_equal([1, nil], pr.call(1))
   end
 
-  def test_with_refinements_preserved_by_clone
-    refined = ->(s) { s.shout }.with_refinements(WithRefinementsModule)
+  def test_refined_preserved_by_clone
+    refined = ->(s) { s.shout }.refined(RefinementsModule)
     assert_equal("Z!", refined.clone.call("z"))
     # the refinement state survives clone, so chaining on the clone is rejected too
-    assert_raise(ArgumentError) { refined.clone.with_refinements(WithRefinementsModule2) }
+    assert_raise(ArgumentError) { refined.clone.refined(RefinementsModule2) }
   end
 
-  def test_with_refinements_module_precedence
+  def test_refined_module_precedence
     # When several modules refine the same method, the last one wins, matching
     # the precedence of nested `using`.
     body = ->(s) { s.shout }
-    assert_equal("?", body.with_refinements(WithRefinementsModule, WithRefinementsModule2).call("Hi"))
-    assert_equal("HI!", body.with_refinements(WithRefinementsModule2, WithRefinementsModule).call("Hi"))
+    assert_equal("?", body.refined(RefinementsModule, RefinementsModule2).call("Hi"))
+    assert_equal("HI!", body.refined(RefinementsModule2, RefinementsModule).call("Hi"))
   end
 
-  class WithRefinementsSuperBase
+  class RefinementsSuperBase
     def greet = "base"
   end
 
-  module WithRefinementsSuperModule
-    refine WithRefinementsSuperBase do
+  module RefinementsSuperModule
+    refine RefinementsSuperBase do
       def greet = "ref-" + super
     end
   end
 
-  def test_with_refinements_super
+  def test_refined_super
     # A refined method may call super to reach the method it refines.
-    refined = ->(o) { o.greet }.with_refinements(WithRefinementsSuperModule)
-    assert_equal("ref-base", refined.call(WithRefinementsSuperBase.new))
+    refined = ->(o) { o.greet }.refined(RefinementsSuperModule)
+    assert_equal("ref-base", refined.call(RefinementsSuperBase.new))
   end
 
-  def test_with_refinements_tracepoint
+  def test_refined_tracepoint
     # Line events fire on the copied iseq just like on the original.
     src = "->(s) {\n  x = s.shout\n  x\n}"
-    refined = eval(src, binding, "wr_trace_eval").with_refinements(WithRefinementsModule)
+    refined = eval(src, binding, "wr_trace_eval").refined(RefinementsModule)
     lines = []
     tp = TracePoint.new(:line) { |t| lines << t.lineno if t.path == "wr_trace_eval" }
     result = tp.enable { refined.call("hi") }
@@ -937,12 +937,12 @@ class TestProc < Test::Unit::TestCase
     assert_equal([2, 3], lines)
   end
 
-  def test_with_refinements_recursion_sees_refinements
+  def test_refined_recursion_sees_refinements
     # The copy shares the source Proc's environment, so a recursive call through
     # the captured local reaches the refined Proc and keeps the refinements.
     fact = nil
     fact = ->(s) { s.empty? ? "" : s[0].shout + fact.call(s[1..]) }
-              .with_refinements(WithRefinementsModule)
+              .refined(RefinementsModule)
     assert_equal("A!B!C!", fact.call("abc"))
   end
 

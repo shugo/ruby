@@ -5294,7 +5294,7 @@ vm_invoke_iseq_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *r
 
     SET_SP(rsp);
 
-    /* `cref` is normally 0; Proc#with_refinements supplies a refinement cref
+    /* `cref` is normally 0; Proc#refined supplies a refinement cref
      * so that method calls inside the block resolve against it. */
     vm_push_frame(ec, iseq,
                   frame_flag,
@@ -5401,7 +5401,7 @@ vm_proc_to_block_handler(VALUE procval)
     return vm_block_to_block_handler(vm_proc_block(procval));
 }
 
-/* Rare path: an inner proc carried a refinement cref (Proc#with_refinements).
+/* Rare path: an inner proc carried a refinement cref (Proc#refined).
  * Kept out of line so the common proc-as-block invocation below stays small and
  * does not inline the iseq-block frame setup. */
 NOINLINE(static VALUE
@@ -5433,7 +5433,7 @@ vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
         VALUE procval = VM_BH_TO_PROC(block_handler);
         rb_proc_t *po;
         GetProcPtr(procval, po);
-        if (po->has_refinements) refined_procval = procval;
+        if (po->is_refined) refined_procval = procval;
         is_lambda = po->is_lambda;
         block_handler = vm_block_to_block_handler(&po->block);
     }

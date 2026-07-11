@@ -291,7 +291,7 @@ vm_call0_body(rb_execution_context_t *ec, struct rb_calling_info *calling, const
                 rb_proc_t *proc;
                 GetProcPtr(calling->recv, proc);
                 ret = rb_vm_invoke_proc(ec, proc, calling->argc, argv, calling->kw_splat, calling->block_handler,
-                                        proc->has_refinements ? rb_proc_refinements_cref(calling->recv) : NULL);
+                                        proc->is_refined ? rb_proc_refinements_cref(calling->recv) : NULL);
                 goto success;
             }
           case OPTIMIZED_METHOD_TYPE_STRUCT_AREF:
@@ -2238,8 +2238,8 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
                 VALUE procval = VM_BH_TO_PROC(block_handler);
                 rb_proc_t *po;
                 GetProcPtr(procval, po);
-                /* Proc#with_refinements refinement cref, if any */
-                if (po->has_refinements) proc_cref = rb_proc_refinements_cref(procval);
+                /* Proc#refined refinement cref, if any */
+                if (po->is_refined) proc_cref = rb_proc_refinements_cref(procval);
             }
             block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
             goto again;
@@ -2259,7 +2259,7 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
     cref = vm_cref_push(ec, self, ep, TRUE, singleton);
 
     /* Keep the block's refinements active inside instance_eval/instance_exec etc.
-     * when the block came from Proc#with_refinements (its cref is carried on
+     * when the block came from Proc#refined (its cref is carried on
      * the proc, not in the captured environment that vm_cref_push reads).
      * Duplicate the refinements hash rather than sharing it: proc_cref is the
      * memoized cref shared by every proc derived from this source, so the freshly

@@ -586,7 +586,7 @@ thread_do_start_proc(rb_thread_t *th)
     VALUE procval = th->invoke_arg.proc.proc;
     rb_proc_t *proc;
     GetProcPtr(procval, proc);
-    const rb_cref_t *cref = proc->has_refinements ? rb_proc_refinements_cref(procval) : NULL;
+    const rb_cref_t *cref = proc->is_refined ? rb_proc_refinements_cref(procval) : NULL;
 
     th->ec->errinfo = Qnil;
     th->ec->root_lep = rb_vm_proc_local_ep(procval);

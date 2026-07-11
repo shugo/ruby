@@ -556,13 +556,13 @@ struct rb_iseq_constant_body {
      *     mandatory-only optimized variant (set only for methods that use the
      *     __builtin.mandatory_only? optimization).
      *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry
-     *     Proc#with_refinements memo (imemo_refinement_memo) caching the most
+     *     Proc#refined memo (imemo_refinement_memo) caching the most
      *     recent {copied iseq, cref} pair for a given (base_cref, modules) key.
-     *     NULL unless this block iseq has been a Proc#with_refinements source.
+     *     NULL unless this block iseq has been a Proc#refined source.
      *     Accessed lock-free with acquire/release semantics; the imemo is
      *     immutable after publication, and old memos are reclaimed by GC.
      * A block iseq never has a mandatory-only variant and only block iseqs are
-     * with_refinements sources, so discriminate with
+     * Proc#refined sources, so discriminate with
      * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK.
      *
      * Both members are pointers to structure types, so by C99 (ISO/IEC
@@ -1333,15 +1333,15 @@ typedef struct {
     unsigned int is_from_method: 1;	/* bool */
     unsigned int is_lambda: 1;		/* bool */
     unsigned int is_isolated: 1;        /* bool */
-    /* Set when the proc carries a Proc#with_refinements refinement cref.
+    /* Set when the proc carries a Proc#refined refinement cref.
      * The cref itself is stored in a hidden instance variable on the proc
      * object (see proc.c) rather than here, to avoid growing rb_proc_t for the
      * common case; this bit gates the lookup. */
-    unsigned int has_refinements: 1;    /* bool */
+    unsigned int is_refined: 1;         /* bool */
 } rb_proc_t;
 
-/* Proc#with_refinements: the refinement cref lives in a hidden ivar on the
- * proc object, gated by rb_proc_t::has_refinements.  rb_proc_refinements_cref
+/* Proc#refined: the refinement cref lives in a hidden ivar on the
+ * proc object, gated by rb_proc_t::is_refined.  rb_proc_refinements_cref
  * assumes the bit is set (callers check it on the fast path). */
 const rb_cref_t *rb_proc_refinements_cref(VALUE procval);
 void rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref);

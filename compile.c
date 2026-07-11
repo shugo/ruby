@@ -12620,7 +12620,7 @@ struct ibf_dump {
     st_table *iseq_table; /* iseq -> iseq number */
     struct ibf_dump_buffer global_buffer;
     struct ibf_dump_buffer *current_buffer;
-    bool subtree; /* dumping a nested block subtree (Proc#with_refinements copy) */
+    bool subtree; /* dumping a nested block subtree (Proc#refined copy) */
 };
 
 struct ibf_load_buffer {
@@ -12880,7 +12880,7 @@ ibf_dump_iseq(struct ibf_dump *dump, const rb_iseq_t *iseq)
 }
 
 /* Dump a parent_iseq/local_iseq reference.  In subtree mode (dumping a nested
- * block for Proc#with_refinements) such a reference may point at an iseq
+ * block for Proc#refined) such a reference may point at an iseq
  * OUTSIDE the dumped subtree (the enclosing method/top iseq).  Pulling that in
  * via ibf_dump_iseq would recursively drag the whole enclosing tree into the
  * dump, so instead we only reference iseqs already in the table (lookup-only)
@@ -13730,7 +13730,7 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     const int parent_iseq_index =           ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->parent_iseq);
     const int local_iseq_index =            ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->local_iseq);
     /* For block iseqs this slot holds the (transient, non-serialized)
-     * Proc#with_refinements memo rather than a mandatory_only_iseq, so dump
+     * Proc#refined memo rather than a mandatory_only_iseq, so dump
      * it as absent. */
     const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : ISEQ_BODY(iseq)->opt.mandatory_only_iseq);
     const ibf_offset_t ci_entries_offset =  ibf_dump_ci_entries(dump, iseq);
@@ -14038,7 +14038,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
     /* For block iseqs mandatory_only_iseq was dumped as absent (index -1), so
      * this writes NULL, which also leaves opt.refinement_memo NULL (the union
      * members share representation; see the opt comment in vm_core.h).  A copy
-     * thus starts with no with_refinements memo. */
+     * thus starts with no Proc#refined memo. */
     RB_OBJ_WRITE(iseq, &load_body->opt.mandatory_only_iseq, mandatory_only_iseq);
 
     // This must be done after the local table is loaded.
@@ -14900,7 +14900,7 @@ ibf_dump_setup(struct ibf_dump *dump, VALUE dumper_obj)
 /* Serialize iseq into dump's buffer (the iseq itself, the iseq list, the object
  * list, and optional trailing extra data) and return the resulting string.
  * dump must already be set up (ibf_dump_setup, plus dump->subtree set for a
- * Proc#with_refinements subtree copy).  Shared by rb_iseq_ibf_dump and
+ * Proc#refined subtree copy).  Shared by rb_iseq_ibf_dump and
  * rb_iseq_dup_with_independent_caches so the header layout has a single writer. */
 static VALUE
 ibf_dump_write_all(struct ibf_dump *dump, const rb_iseq_t *iseq, VALUE opt)
@@ -15172,7 +15172,7 @@ ibf_dump_iseq_table_collect_i(st_data_t key, st_data_t val, st_data_t arg)
 }
 
 /* Deep-copy an iseq subtree with independent inline caches, used by
- * Proc#with_refinements (see proc.c) to give a copied block its own call/const
+ * Proc#refined (see proc.c) to give a copied block its own call/const
  * caches so refinement method resolution cannot leak into the original Proc.
  *
  * Rather than hand-mirror every rb_iseq_constant_body field (a maintenance

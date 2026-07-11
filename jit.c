@@ -228,7 +228,7 @@ rb_optimized_call(VALUE recv, rb_execution_context_t *ec, int argc, VALUE *argv,
     rb_proc_t *proc;
     GetProcPtr(recv, proc);
     return rb_vm_invoke_proc(ec, proc, argc, argv, kw_splat, block_handler,
-                             proc->has_refinements ? rb_proc_refinements_cref(recv) : NULL);
+                             proc->is_refined ? rb_proc_refinements_cref(recv) : NULL);
 }
 
 unsigned int
