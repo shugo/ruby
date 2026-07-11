@@ -464,12 +464,11 @@ proc_refined(int argc, VALUE *argv, VALUE self)
          * reused from any Ractor: the cref imemo itself is always allocated
          * shareable (vm_cref_new0), and its refinements Hash is the only
          * Ractor-local part.  The table is meant to stay immutable: `using`
-         * inside the body is rejected (CREF_REFINED_PROC), and nothing else
-         * writes a cref's refinements.  CREF_OMOD_SHARED is a defensive guard
-         * that makes the sole remaining writer -- rb_using_refinement, reached
-         * only from the unguarded rb_vm_using_module() C API -- copy the frozen
-         * Hash before writing rather than mutate it (and the shared memo) in
-         * place. */
+         * inside the body is rejected (CREF_REFINED_PROC), and no code path
+         * writes to an existing cref's refinements otherwise.  CREF_OMOD_SHARED
+         * is defense in depth: any path that ever hands this cref to
+         * rb_using_refinement copies the frozen Hash before writing rather
+         * than mutate it (and the shared memo) in place. */
         VALUE refs = CREF_REFINEMENTS(cref);
         if (!NIL_P(refs)) {
             OBJ_FREEZE(refs);
