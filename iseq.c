@@ -269,7 +269,13 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * become garbage).  When a new memo replaces the old one, the old Array is
  * no longer referenced by the iseq but stays alive as long as any lock-free
  * reader holds it on the C stack (conservative GC pins it).  Once all
- * readers finish, the next GC reclaims it. */
+ * readers finish, the next GC reclaims it.
+ *
+ * The surviving memo is deliberately retained for the lifetime of the
+ * source iseq, even after every Proc derived from it is gone: it is a
+ * single bounded entry per source iseq, and dropping it earlier would only
+ * trade memory (one copied block subtree and its cref) for a rebuild on
+ * the next Proc#refined call. */
 
 enum iseq_refinement_memo_index {
     REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */

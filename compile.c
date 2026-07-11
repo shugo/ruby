@@ -14965,6 +14965,13 @@ rb_iseq_ibf_dump(const rb_iseq_t *iseq, VALUE opt)
     dump_obj = TypedData_Make_Struct(0, struct ibf_dump, &ibf_dump_type, dump);
     ibf_dump_setup(dump, dump_obj);
 
+    /* The subtree encoding (out-of-subtree parent/local refs dumped as
+     * absent) is only valid for the in-process round-trip in
+     * rb_iseq_dup_with_independent_caches, which restores the boundary
+     * references after load.  A persisted binary must never use it: the
+     * absent references would silently load as NULL. */
+    VM_ASSERT(!dump->subtree);
+
     str = ibf_dump_write_all(dump, iseq, opt);
     RB_GC_GUARD(dump_obj);
     return str;
