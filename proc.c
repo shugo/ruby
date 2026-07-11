@@ -390,6 +390,9 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  *
  *   refined_proc = original.refined(StringRefinement, OtherRefinement)
  *
+ * The refinement set of the returned Proc is fixed when it is created:
+ * calling +using+ inside its body raises RuntimeError.
+ *
  * The refinements are in effect throughout the body, including nested blocks
  * and methods defined with +def+ inside it.  As with a +def+ inside a +using+
  * scope, such a method keeps the refinements even when it is called later:
@@ -473,7 +476,16 @@ proc_refined(int argc, VALUE *argv, VALUE self)
         rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
-    return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
+    /* The memoized cref is a shared template that must stay immutable: other
+     * procs (and other Ractors, via the memo) use it too.  Hand this proc a
+     * shallow per-proc copy sharing the frozen refinements table, so in-place
+     * cref mutations from the body (scope visibility) land on this proc's own
+     * cref only.  The REFINED_PROC flag makes `using` inside the body raise:
+     * it would diverge this proc's refinement set from its siblings', which
+     * share the copied iseq's refined call caches. */
+    rb_cref_t *proc_cref = rb_vm_cref_dup_with_shared_refinements(new_cref);
+    CREF_REFINED_PROC_SET(proc_cref);
+    return rb_proc_dup_with_iseq_and_cref(self, new_iseq, proc_cref);
 }
 
 /*

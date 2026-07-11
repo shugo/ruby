@@ -257,7 +257,9 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * because everything in the memo is shareable: crefs always are, iseqs
  * always are, and proc_refined freezes the cref's refinements Hash (whose
  * contents are classes and iclasses, shareable themselves) before the
- * store.
+ * store.  The stored cref is an immutable template: proc_refined hands each
+ * proc a shallow per-proc copy (rb_vm_cref_dup_with_shared_refinements), so
+ * the template itself never appears in a frame and is never mutated.
  *
  * The memo is a hidden frozen Array, immutable after publication:
  *

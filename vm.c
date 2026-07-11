@@ -380,6 +380,31 @@ rb_vm_cref_dup(const rb_cref_t *cref)
     return new_cref;
 }
 
+/* Proc#refined: shallow-duplicate a memoized refinement cref for one proc.
+ * Unlike rb_vm_cref_dup, the (frozen, shareable) refinements table is shared
+ * rather than copied; CREF_OMOD_SHARED makes any later mutation path
+ * (rb_using_refinement) copy the table before writing into this cref.  Each
+ * refined proc gets its own top cref so in-place cref mutations from the
+ * proc body -- `using` through rb_vm_cref(), scope visibility -- stay
+ * per-proc and never modify the published memo cref, which other procs
+ * (and other Ractors, via the memo) share. */
+rb_cref_t *
+rb_vm_cref_dup_with_shared_refinements(const rb_cref_t *cref)
+{
+    const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
+    rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
+    int pushed_by_eval = CREF_PUSHED_BY_EVAL(cref);
+    int singleton = CREF_SINGLETON(cref);
+
+    new_cref = vm_cref_new(cref->klass_or_self, visi->method_visi, visi->module_func, next_cref, pushed_by_eval, singleton);
+
+    if (!NIL_P(CREF_REFINEMENTS(cref))) {
+        CREF_REFINEMENTS_SET(new_cref, CREF_REFINEMENTS(cref));
+        CREF_OMOD_SHARED_SET(new_cref);
+    }
+
+    return new_cref;
+}
 
 rb_cref_t *
 rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)

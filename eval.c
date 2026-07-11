@@ -1641,6 +1641,25 @@ ignored_block(VALUE module, const char *klass)
     rb_warn("%s""using doesn't call the given block""%s.", klass, anon);
 }
 
+/* Proc#refined: reject `using` anywhere inside a refined proc's body.  The
+ * memoized iseq copy shares refined call caches across every proc derived
+ * from the same (source, modules) key, which is only sound while all of them
+ * run under the same refinement set; `using` inside the body would diverge
+ * the set mid-copy and poison the shared caches.  The flag is set on the
+ * proc's own cref; crefs pushed inside the body (class/module bodies,
+ * module_eval, eval) chain to it, so walk the chain. */
+static void
+check_not_refined_proc_scope(const char *using_name)
+{
+    const rb_cref_t *cref;
+    for (cref = rb_vm_cref(); cref; cref = CREF_NEXT(cref)) {
+        if (CREF_REFINED_PROC(cref)) {
+            rb_raise(rb_eRuntimeError,
+                     "%s is not permitted in a proc with refinements", using_name);
+        }
+    }
+}
+
 /*
  *  call-seq:
  *     using(module)    -> self
@@ -1664,6 +1683,7 @@ mod_using(VALUE self, VALUE module)
     if (rb_block_given_p()) {
         ignored_block(module, "Module#");
     }
+    check_not_refined_proc_scope("Module#using");
     rb_using_module(rb_vm_cref_replace_with_duplicated_cref(), module);
     return self;
 }
@@ -2007,6 +2027,7 @@ top_using(VALUE self, VALUE module)
     if (rb_block_given_p()) {
         ignored_block(module, "main.");
     }
+    check_not_refined_proc_scope("main.using");
     rb_using_module(rb_vm_cref_replace_with_duplicated_cref(), module);
     return self;
 }

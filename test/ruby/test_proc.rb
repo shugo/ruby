@@ -684,6 +684,32 @@ class TestProc < Test::Unit::TestCase
     assert_equal("HI!", refined.call("hi"))
   end
 
+  def test_refined_using_in_body_rejected
+    # The refinement set of a refined proc is fixed at refined() time: procs
+    # derived from the same source and modules share the copied iseq (and its
+    # refined call caches), so `using` inside the body would diverge one
+    # proc's refinement set and poison the caches its siblings use.
+    assert_separately([], <<~'RUBY')
+      module M1; refine(String) { def shout = upcase + "!" }; end
+      module M2; refine(String) { def whisper = downcase + "..." }; end
+      msg = /using is not permitted in a proc with refinements/
+      r = proc { using M2 }.refined(M1)
+      assert_raise_with_message(RuntimeError, msg) { r.call }
+      # through module_eval (Module#using) as well
+      e = proc { using M2 }.refined(M1)
+      assert_raise_with_message(RuntimeError, msg) { Module.new.module_eval(&e) }
+      # in a class body or a nested block inside the refined proc
+      c = proc { class ::RefinedUsingTmp; using M2; end }.refined(M1)
+      assert_raise_with_message(RuntimeError, msg) { c.call }
+      n = proc { -> { using M2 }.call }.refined(M1)
+      assert_raise_with_message(RuntimeError, msg) { n.call }
+      # plain procs are unaffected
+      assert_equal("ok...", Module.new.module_eval(&proc { using M2; "ok".whisper }))
+      # and the refined proc itself still works
+      assert_equal("OK!", proc { "ok".shout }.refined(M1).call)
+    RUBY
+  end
+
   def test_refined_rejected_by_define_method
     # A bmethod is invoked against its method entry, not the proc's refinement
     # cref, so defining a method from a refined proc would silently drop
