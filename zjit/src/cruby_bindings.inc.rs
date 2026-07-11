@@ -1270,10 +1270,10 @@ pub union rb_iseq_constant_body__bindgen_ty_2 {
     pub single: iseq_bits_t,
 }
 #[repr(C)]
-#[derive(Copy, Clone)]
-pub union rb_iseq_constant_body__bindgen_ty_3 {
-    pub mandatory_only_iseq: *const rb_iseq_t,
-    pub refinement_memo: *mut rb_iseq_refinement_memo,
+pub struct rb_iseq_constant_body__bindgen_ty_3 {
+    pub mandatory_only_iseq: __BindgenUnionField<*const rb_iseq_t>,
+    pub refinement_memo: __BindgenUnionField<VALUE>,
+    pub bindgen_union_field: u64,
 }
 #[repr(C)]
 pub struct rb_iseq_struct {
@@ -2061,11 +2061,6 @@ pub struct rb_gc_zjit_mmtk_new_obj_fastpath {
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct succ_index_table {
-    pub _address: u8,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct rb_iseq_refinement_memo {
     pub _address: u8,
 }
 unsafe extern "C" {
