@@ -234,7 +234,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
         compile_data_free(ISEQ_COMPILE_DATA(iseq));
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
-        /* refinement_memo is a GC-managed imemo; no manual free needed. */
+        /* refinement_memo is a GC-managed Array; no manual free needed. */
         SIZED_FREE(body);
     }
 
@@ -244,56 +244,85 @@ rb_iseq_free(const rb_iseq_t *iseq)
 /* --- Proc#refined: single-entry per-iseq memo ---
  *
  * Copying an iseq (rb_iseq_dup_with_independent_caches in compile.c) is
- * expensive, so the most recent {copied iseq, cref}
- * pair produced from a given source iseq is memoized on the source iseq's body,
- * keyed by (base_cref, modules).  Repeatedly calling Proc#refined on the
- * same proc with the same modules then reuses the copy instead of rebuilding it.
- * Sharing a copy is safe because all results for one key run under the same
- * refinement set, so their inline caches resolve identically.
+ * expensive, so the most recent {copied iseq, cref} pair produced from a
+ * given source iseq is memoized on the source iseq's body, keyed by
+ * (ractor, base_cref, modules).  Repeatedly calling Proc#refined on the
+ * same proc with the same modules then reuses the copy instead of
+ * rebuilding it.  Sharing a copy is safe because all results for one key
+ * run under the same refinement set, so their inline caches resolve
+ * identically.
  *
- * The memo is a GC-managed imemo (imemo_refinement_memo), immutable after
- * publication.  Both paths are lock-free: lookup acquire-loads the memo
- * pointer, and store publishes a fully-initialized imemo with a single
- * release store, so it needs no lock either (concurrent stores are safe;
- * the last writer wins and the losers' memos become garbage).  When a new
- * memo replaces the old one, the old imemo is no longer referenced by the
- * iseq but stays alive as long as any lock-free reader holds its VALUE on
- * the C stack (conservative GC pins it).  Once all readers finish, the next
- * GC reclaims it. */
+ * The creating Ractor is part of the key because the memoized cref
+ * references Ractor-local, non-shareable state (its refinements Hash): a
+ * block iseq is reachable from multiple Ractors (through a shareable proc,
+ * or simply because the same block literal runs in several Ractors), and
+ * without the Ractor check a lookup from Ractor B would hand out a cref
+ * created by Ractor A.
+ *
+ * The memo is a hidden frozen Array, immutable after publication:
+ *
+ *   [ractor_id, base_cref, copied_iseq, cref, mod1, mod2, ...]
+ *
+ * Both paths are lock-free: lookup acquire-loads the memo, and store
+ * publishes a fully-populated frozen Array with a single release store
+ * (concurrent stores are safe; the last writer wins and the losers' memos
+ * become garbage).  When a new memo replaces the old one, the old Array is
+ * no longer referenced by the iseq but stays alive as long as any lock-free
+ * reader holds it on the C stack (conservative GC pins it).  Once all
+ * readers finish, the next GC reclaims it. */
+
+enum iseq_refinement_memo_index {
+    REFINEMENT_MEMO_RACTOR_ID,   /* key: Fixnum id of the creating Ractor */
+    REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */
+    REFINEMENT_MEMO_COPIED_ISEQ, /* value: copied iseq with independent caches */
+    REFINEMENT_MEMO_CREF,        /* value: cref with refinements activated */
+    REFINEMENT_MEMO_MODS         /* key: modules, in argument order */
+};
+
+/* The current Ractor's id as a Fixnum.  LONG2FIX never allocates, keeping
+ * the lookup path allocation-free. */
+static VALUE
+iseq_refinement_memo_ractor_key(void)
+{
+    return LONG2FIX((long)rb_ractor_id(GET_RACTOR()));
+}
 
 static bool
-iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
-                               VALUE base_cref, long argc, const VALUE *mods)
+iseq_refinement_memo_key_match(VALUE memo, VALUE base_cref,
+                               long argc, const VALUE *mods)
 {
-    if (memo->base_cref != base_cref) return false;
-    /* Single module is stored directly; multiple modules as a frozen Array. */
-    if (RB_TYPE_P(memo->mods, T_ARRAY)) {
-        if (RARRAY_LEN(memo->mods) != argc) return false;
-        const VALUE *a = RARRAY_CONST_PTR(memo->mods);
-        for (long i = 0; i < argc; i++) {
-            if (a[i] != mods[i]) return false;
-        }
-    }
-    else {
-        if (argc != 1 || memo->mods != mods[0]) return false;
+    const VALUE *p = RARRAY_CONST_PTR(memo);
+    if (p[REFINEMENT_MEMO_BASE_CREF] != base_cref) return false;
+    if (RARRAY_LEN(memo) - REFINEMENT_MEMO_MODS != argc) return false;
+    for (long i = 0; i < argc; i++) {
+        if (p[REFINEMENT_MEMO_MODS + i] != mods[i]) return false;
     }
     return true;
 }
 
-/* Lock-free lookup: acquire-load the memo pointer, read immutable fields.
+/* Lock-free lookup: acquire-load the memo, read immutable elements.
  * On a key hit, fill *iseq_out / *cref_out and return true; otherwise false. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
-    const struct rb_iseq_refinement_memo *memo =
-        (const struct rb_iseq_refinement_memo *)rbimpl_atomic_ptr_load(
-            (void **)&ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
+    VALUE memo = rbimpl_atomic_value_load(
+        &ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
     if (memo) {
+        const VALUE *p = RARRAY_CONST_PTR(memo);
+        if (p[REFINEMENT_MEMO_RACTOR_ID] != iseq_refinement_memo_ractor_key()) {
+            /* The memo belongs to another Ractor; its cref references that
+             * Ractor's non-shareable state, so it must not be reused here. */
+            rb_category_warn(
+                RB_WARN_CATEGORY_PERFORMANCE,
+                "Proc#refined called on the same block from multiple Ractors disables memoization"
+            );
+            return false;
+        }
         if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
-            *iseq_out = (const rb_iseq_t *)memo->copied_iseq;
-            *cref_out = (const rb_cref_t *)memo->cref;
+            *iseq_out = (const rb_iseq_t *)p[REFINEMENT_MEMO_COPIED_ISEQ];
+            *cref_out = (const rb_cref_t *)p[REFINEMENT_MEMO_CREF];
             return true;
         }
         rb_category_warn(
@@ -304,39 +333,32 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
     return false;
 }
 
-/* Allocate a new immutable imemo memo and publish it with a release store.
- * Needs no lock: the single atomic pointer store is the only shared-state
- * mutation, so concurrent stores just overwrite each other (last writer
- * wins) and the losing memos are reclaimed by GC. */
+/* Build a new memo Array and publish it with a release store.  Needs no
+ * lock: the single atomic store is the only shared-state mutation, so
+ * concurrent stores just overwrite each other (last writer wins) and the
+ * losing memos are reclaimed by GC. */
 void
 rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
                               long argc, const VALUE *mods,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
-    VALUE mods_val;
-    if (argc == 1) {
-        mods_val = mods[0];
+    VALUE memo = rb_ary_hidden_new(REFINEMENT_MEMO_MODS + argc);
+    rb_ary_push(memo, iseq_refinement_memo_ractor_key());
+    rb_ary_push(memo, base_cref);
+    rb_ary_push(memo, (VALUE)copied_iseq);
+    rb_ary_push(memo, (VALUE)cref);
+    for (long i = 0; i < argc; i++) {
+        rb_ary_push(memo, mods[i]);
     }
-    else {
-        mods_val = rb_ary_new_from_values(argc, mods);
-        OBJ_FREEZE(mods_val);
-        RB_OBJ_SET_SHAREABLE(mods_val);
-    }
-
-    VALUE memo_obj = rb_imemo_new(imemo_refinement_memo, 0,
-                                  sizeof(struct rb_iseq_refinement_memo), true);
-    struct rb_iseq_refinement_memo *memo =
-        (struct rb_iseq_refinement_memo *)memo_obj;
-
-    RB_OBJ_WRITE(memo_obj, &memo->base_cref, base_cref);
-    RB_OBJ_WRITE(memo_obj, &memo->mods, mods_val);
-    RB_OBJ_WRITE(memo_obj, &memo->copied_iseq, (VALUE)copied_iseq);
-    RB_OBJ_WRITE(memo_obj, &memo->cref, (VALUE)cref);
+    OBJ_FREEZE(memo);
+    /* The source iseq is shareable; the GC shareability verifier requires
+     * every child of a shareable object to be shareable too. */
+    RB_OBJ_SET_SHAREABLE(memo);
 
     struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
     VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
-    rbimpl_atomic_ptr_store((volatile void **)&body->opt.refinement_memo, memo, RBIMPL_ATOMIC_RELEASE);
-    RB_OBJ_WRITTEN(src_iseq, Qundef, memo_obj);
+    rbimpl_atomic_value_store(&body->opt.refinement_memo, memo, RBIMPL_ATOMIC_RELEASE);
+    RB_OBJ_WRITTEN(src_iseq, Qundef, memo);
 }
 
 typedef VALUE iseq_value_itr_t(void *ctx, VALUE obj);
@@ -485,7 +507,7 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
          * the iseq type selects which one is live. */
         if (body->type == ISEQ_TYPE_BLOCK) {
             if (body->opt.refinement_memo) {
-                rb_gc_mark_and_move_ptr(&body->opt.refinement_memo);
+                rb_gc_mark_and_move(&body->opt.refinement_memo);
             }
         }
         else if (body->opt.mandatory_only_iseq) {
@@ -634,7 +656,7 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
         size += body->ci_size * sizeof(struct rb_call_data);
         // TODO: should we count imemo_callinfo?
 
-        /* refinement_memo is a GC-managed imemo; its memsize is reported separately. */
+        /* refinement_memo is a GC-managed Array; its memsize is reported separately. */
     }
 
     compile_data = ISEQ_COMPILE_DATA(iseq);

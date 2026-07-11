@@ -17,11 +17,7 @@
 
 #define IMEMO_MASK   0x0f
 
-/* FL_USER0 to FL_USER3 is for type (low 4 bits).
- * Types >= 16 store the 5th bit non-contiguously in IMEMO_TYPE_EXT_BIT
- * to avoid encroaching on IMEMO_FL_USER0 (FL_USER4). */
-#define IMEMO_TYPE_EXT_BIT FL_USER11
-
+/* FL_USER0 to FL_USER3 is for type */
 #define IMEMO_FL_USHIFT (FL_USHIFT + 4)
 #define IMEMO_FL_USER0 FL_USER4
 #define IMEMO_FL_USER1 FL_USER5
@@ -48,7 +44,6 @@ enum imemo_type {
     imemo_fields         = 13,
     imemo_subclasses     = 14,
     imemo_cdhash         = 15,
-    imemo_refinement_memo = 16,
 };
 
 /* CREF (Class REFerence) is defined in method.h */
@@ -108,14 +103,6 @@ struct rb_imemo_tmpbuf_struct {
 struct rb_imemo_cdhash {
     VALUE flags;
     st_table tbl;
-};
-
-struct rb_iseq_refinement_memo {
-    VALUE flags;
-    VALUE base_cref;     /* key: captured cref of the source proc */
-    VALUE mods;          /* key: module (argc=1) or frozen Array (argc>=2) */
-    VALUE copied_iseq;   /* value: copied iseq with independent caches */
-    VALUE cref;          /* value: cref with refinements activated */
 };
 
 /* Set on imemo_memo when u3 holds a VALUE that GC must mark.
@@ -178,24 +165,18 @@ RUBY_SYMBOL_EXPORT_END
 static inline enum imemo_type
 imemo_type(VALUE imemo)
 {
-    VALUE flags = RBASIC(imemo)->flags;
-    unsigned int lo = (flags >> FL_USHIFT) & IMEMO_MASK;
-    unsigned int hi = (flags & IMEMO_TYPE_EXT_BIT) ? 0x10 : 0;
-    return (enum imemo_type)(lo | hi);
+    return (RBASIC(imemo)->flags >> FL_USHIFT) & IMEMO_MASK;
 }
 
 static inline int
 imemo_type_p(VALUE imemo, enum imemo_type imemo_type)
 {
     if (LIKELY(!RB_SPECIAL_CONST_P(imemo))) {
-        VALUE flags = RBASIC(imemo)->flags;
-        /* Check T_IMEMO type tag and low 4 bits of imemo type. */
-        const VALUE lo_mask = (IMEMO_MASK << FL_USHIFT) | RUBY_T_MASK;
-        const VALUE expected_lo = ((imemo_type & IMEMO_MASK) << FL_USHIFT) | T_IMEMO;
-        if ((flags & lo_mask) != expected_lo) return 0;
-        /* Check the extension bit for types >= 16. */
-        unsigned int has_ext = (flags & IMEMO_TYPE_EXT_BIT) ? 0x10 : 0;
-        return has_ext == (unsigned int)(imemo_type & 0x10);
+        /* fixed at compile time if imemo_type is given. */
+        const VALUE mask = (IMEMO_MASK << FL_USHIFT) | RUBY_T_MASK;
+        const VALUE expected_type = (imemo_type << FL_USHIFT) | T_IMEMO;
+        /* fixed at runtime. */
+        return expected_type == (RBASIC(imemo)->flags & mask);
     }
     else {
         return 0;

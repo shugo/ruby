@@ -555,27 +555,25 @@ struct rb_iseq_constant_body {
      *   - mandatory_only_iseq: for ISEQ_TYPE_METHOD, the body of the
      *     mandatory-only optimized variant (set only for methods that use the
      *     __builtin.mandatory_only? optimization).
-     *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry
-     *     Proc#refined memo (imemo_refinement_memo) caching the most
-     *     recent {copied iseq, cref} pair for a given (base_cref, modules) key.
-     *     NULL unless this block iseq has been a Proc#refined source.
-     *     Accessed lock-free with acquire/release semantics; the imemo is
-     *     immutable after publication, and old memos are reclaimed by GC.
+     *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry Proc#refined
+     *     memo, a hidden frozen Array caching the most recent {copied iseq,
+     *     cref} pair for a (ractor, base_cref, modules) key (see iseq.c for
+     *     the layout).  0 unless this block iseq has been a Proc#refined
+     *     source.  Accessed lock-free with acquire/release semantics; the
+     *     Array is immutable after publication, and old memos are reclaimed
+     *     by GC.
      * A block iseq never has a mandatory-only variant and only block iseqs are
      * Proc#refined sources, so discriminate with
      * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK.
      *
-     * Both members are pointers to structure types, so by C99 (ISO/IEC
-     * 9899:1999) 6.2.5p27 -- "All pointers to structure types shall have the
-     * same representation and alignment requirements as each other" -- storing
-     * NULL into one member makes the other read as NULL too.  IBF load relies on
-     * this: it only writes opt.mandatory_only_iseq (NULL for block iseqs), which
-     * also leaves opt.refinement_memo NULL.  Adding a non-structure-pointer
-     * member (void *, uintptr_t, ...) would break that guarantee and require
-     * writing the correct member explicitly. */
+     * IBF load only writes opt.mandatory_only_iseq (NULL for block iseqs) and
+     * leaves opt.refinement_memo alone; reading refinement_memo then yields 0
+     * (no memo) because NULL and (VALUE)0 share an all-zero representation on
+     * every supported platform.  A hypothetical platform with a non-zero NULL
+     * representation would require writing the correct member explicitly. */
     union {
         const rb_iseq_t *mandatory_only_iseq;
-        struct rb_iseq_refinement_memo *refinement_memo;
+        VALUE refinement_memo;
     } opt;
 
 #if USE_YJIT || USE_ZJIT
