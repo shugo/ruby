@@ -57,6 +57,12 @@ impl From<InsnId> for usize {
     }
 }
 
+impl From<usize> for InsnId {
+    fn from(val: usize) -> Self {
+        InsnId(val)
+    }
+}
+
 impl std::fmt::Display for InsnId {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(f, "v{}", self.0)
@@ -553,6 +559,8 @@ pub enum SideExitReason {
     BlockParamProxyNotProc,
     BlockParamProxyFallbackMiss,
     BlockParamProxyProfileNotCovered,
+    InvokeBlockHandlerNotIseq,
+    InvokeBlockIseqChanged,
     BlockParamWbRequired,
     StackOverflow,
     FixnumModByZero,
@@ -564,6 +572,7 @@ pub enum SideExitReason {
     DirectiveInduced,
     SendWhileTracing,
     NoProfileSend,
+    NoProfileGetIvar,
     InvokeBlockNotIfunc,
 }
 
@@ -814,6 +823,7 @@ pub enum FieldName {
     VM_ENV_DATA_INDEX_SPECVAL,
     VM_ENV_DATA_INDEX_FLAGS,
     RBASIC_FLAGS,
+    code_iseq,
     shape_id,
     as_heap,
     fields_obj,
@@ -854,6 +864,19 @@ pub struct CCallWithFrameData {
     pub return_type: Type,
     pub elidable: bool,
     pub block: Option<BlockHandler>,
+}
+
+/// Payload of [`Insn::SendDirect`]. Boxed in the enum to keep `Insn` small.
+#[derive(Debug, Clone)]
+pub struct SendDirectData {
+    pub recv: InsnId,
+    pub cd: *const rb_call_data,
+    pub cme: *const rb_callable_method_entry_t,
+    pub iseq: IseqPtr,
+    pub args: Vec<InsnId>,
+    pub kw_bits: u32,
+    pub block: Option<BlockHandler>,
+    pub state: InsnId,
 }
 
 /// Payload of [`Insn::CCallVariadic`]. Boxed in the enum to keep `Insn` small.
@@ -972,7 +995,7 @@ pub enum Insn {
     GetConstantPath { ic: *const iseq_inline_constant_cache, state: InsnId },
     /// Kernel#block_given? but without pushing a frame. Similar to [`Insn::Defined`] with
     /// `DEFINED_YIELD`
-    IsBlockGiven { lep: InsnId },
+    IsBlockGiven { block_handler: InsnId },
     /// Test the bit at index of val, a Fixnum.
     /// Return Qtrue if the bit is set, else Qfalse.
     FixnumBitCheck { val: InsnId, index: u8 },
@@ -1003,10 +1026,10 @@ pub enum Insn {
     LoadSP,
     /// Load cfp->self
     LoadSelf,
-    LoadField { recv: InsnId, id: FieldName, offset: i32, return_type: Type },
+    LoadField { recv: InsnId, id: FieldName, offset: i32, return_type: Type, num_bits: u8 },
     /// Write `val` at an offset of `recv`.
     /// When writing a Ruby object to a Ruby object, one must use GuardNotFrozen (or equivalent) before and WriteBarrier after.
-    StoreField { recv: InsnId, id: FieldName, offset: i32, val: InsnId },
+    StoreField { recv: InsnId, id: FieldName, offset: i32, val: InsnId, num_bits: u8 },
     WriteBarrier { recv: InsnId, val: InsnId },
 
     /// Check whether VM_FRAME_FLAG_MODIFIED_BLOCK_PARAM is set in the (already loaded) environment flags.
@@ -1104,18 +1127,21 @@ pub enum Insn {
         state: InsnId,
         kw_splat: bool,
     },
-
-    /// Optimized ISEQ call
-    SendDirect {
-        recv: InsnId,
-        cd: *const rb_call_data,
-        cme: *const rb_callable_method_entry_t,
+    /// Fast-path `yield`: the enclosing frame's block is a known ISEQ block, so push its frame
+    /// inline and jump straight to its JIT entry. `iseq` is the comptime-known block iseq; the
+    /// tag + iseq-identity guards live in preceding HIR instructions, and `captured` is the
+    /// guarded, untagged `struct rb_captured_block *` codegen reads self/ep from. Args are the
+    /// positional arguments (lead-only, exact arity).
+    InvokeBlockIseqDirect {
         iseq: IseqPtr,
+        /// Guarded `struct rb_captured_block *` (block handler with the ISEQ tag masked off).
+        captured: InsnId,
         args: Vec<InsnId>,
-        kw_bits: u32,
-        block: Option<BlockHandler>,
         state: InsnId,
     },
+
+    /// Optimized ISEQ call
+    SendDirect(Box<SendDirectData>),
 
     /// Push a lighter weight frame used for inlined methods.
     PushInlineFrame {
@@ -1141,7 +1167,7 @@ pub enum Insn {
         args: Vec<InsnId>,
         state: InsnId,
         leaf: bool,
-        return_type: Option<Type>,  // None for unannotated builtins
+        return_type: Type,  // BasicObject for unannotated builtins
     },
 
     /// Set up frame. Remember the address as the JIT entry for the insn_idx in `jit_entry_insns()[jit_entry_idx]`.
@@ -1179,7 +1205,7 @@ pub enum Insn {
     /// Float#to_i: truncate float to integer via rb_jit_flo_to_i
     FloatToInt { recv: InsnId, state: InsnId },
 
-    AnyToString { val: InsnId, str: InsnId, state: InsnId },
+    AnyToString { val: InsnId, state: InsnId },
 
     /// Refine the known type information of with additional type information.
     /// Computes the intersection of the existing type and the new type.
@@ -1190,15 +1216,15 @@ pub enum Insn {
     /// Side-exit if val doesn't have the expected type.
     GuardType { val: InsnId, guard_type: Type, state: InsnId, recompile: Option<Recompile> },
     /// Side-exit if val is not the expected Const.
-    GuardBitEquals { val: InsnId, expected: Const, reason: SideExitReason, state: InsnId, recompile: Option<Recompile> },
+    GuardBitEquals { val: InsnId, expected: Const, reason: Box<SideExitReason>, state: InsnId, recompile: Option<Recompile> },
     /// Side-exit if (val & mask) == 0
-    GuardAnyBitSet { val: InsnId, mask: Const, mask_name: Option<ID>, reason: SideExitReason, state: InsnId, recompile: Option<Recompile> },
+    GuardAnyBitSet { val: InsnId, mask: Const, mask_name: Option<ID>, reason: Box<SideExitReason>, state: InsnId, recompile: Option<Recompile> },
     /// Side-exit if (val & mask) != 0
-    GuardNoBitsSet { val: InsnId, mask: Const, mask_name: Option<ID>, reason: SideExitReason, state: InsnId },
+    GuardNoBitsSet { val: InsnId, mask: Const, mask_name: Option<ID>, reason: Box<SideExitReason>, state: InsnId },
     /// Side-exit if left is not greater than or equal to right (both operands are C long).
-    GuardGreaterEq { left: InsnId, right: InsnId, reason: SideExitReason, state: InsnId },
+    GuardGreaterEq { left: InsnId, right: InsnId, reason: Box<SideExitReason>, state: InsnId },
     /// Side-exit if left is not less than right (both operands are C long).
-    GuardLess { left: InsnId, right: InsnId, reason: SideExitReason, state: InsnId },
+    GuardLess { left: InsnId, right: InsnId, reason: Box<SideExitReason>, state: InsnId },
 
     /// Generate no code (or padding if necessary) and insert a patch point
     /// that can be rewritten to a side exit when the Invariant is broken.
@@ -1207,7 +1233,7 @@ pub enum Insn {
     /// Side-exit into the interpreter.
     /// If recompile is not None, the side exit will profile and invalidate the ISEQ
     /// so that it gets recompiled with the new profile data.
-    SideExit { state: InsnId, reason: SideExitReason, recompile: Option<Recompile> },
+    SideExit { state: InsnId, reason: Box<SideExitReason>, recompile: Option<Recompile> },
 
     /// Increment a counter in ZJIT stats
     IncrCounter(Counter),
@@ -1248,8 +1274,8 @@ macro_rules! for_each_operand_impl {
             | Insn::IncrCounter(_)
             | Insn::IncrCounterPtr { .. } => {}
 
-            Insn::IsBlockGiven { lep } => {
-                $visit_one!(*lep);
+            Insn::IsBlockGiven { block_handler } => {
+                $visit_one!(*block_handler);
             }
             Insn::IsBlockParamModified { flags } => {
                 $visit_one!(*flags);
@@ -1448,7 +1474,6 @@ macro_rules! for_each_operand_impl {
             }
             Insn::Send { recv, args, state, .. }
             | Insn::SendForward { recv, args, state, .. }
-            | Insn::SendDirect { recv, args, state, .. }
             | Insn::PushInlineFrame { recv, args, state, .. }
             | Insn::InvokeBuiltin { recv, args, state, .. }
             | Insn::InvokeSuper { recv, args, state, .. }
@@ -1458,9 +1483,14 @@ macro_rules! for_each_operand_impl {
                 $visit_many!(args);
                 $visit_one!(*state);
             }
-            // CCallWithFrame/CCallVariadic carry their operands behind a Box, which
-            // stable Rust can't destructure in a pattern. visit_one takes a place, so
+            // SendDirect/CCallWithFrame/CCallVariadic carry their operands behind a Box,
+            // which stable Rust can't destructure in a pattern. visit_one takes a place, so
             // a box field works the same as the deref'd bindings used by other arms.
+            Insn::SendDirect(insn) => {
+                $visit_one!(insn.recv);
+                $visit_many!(insn.args);
+                $visit_one!(insn.state);
+            }
             Insn::CCallWithFrame(insn) => {
                 $visit_one!(insn.recv);
                 $visit_many!(insn.args);
@@ -1472,6 +1502,11 @@ macro_rules! for_each_operand_impl {
                 $visit_one!(insn.state);
             }
             Insn::InvokeBlock { args, state, .. } => {
+                $visit_many!(args);
+                $visit_one!(*state);
+            }
+            Insn::InvokeBlockIseqDirect { captured, args, state, .. } => {
+                $visit_one!(*captured);
                 $visit_many!(args);
                 $visit_one!(*state);
             }
@@ -1512,9 +1547,8 @@ macro_rules! for_each_operand_impl {
                 $visit_one!(*val);
                 $visit_one!(*state);
             }
-            Insn::AnyToString { val, str, state, .. } => {
+            Insn::AnyToString { val, state, .. } => {
                 $visit_one!(*val);
-                $visit_one!(*str);
                 $visit_one!(*state);
             }
             Insn::LoadField { recv, .. } => {
@@ -1672,7 +1706,7 @@ impl Insn {
             Insn::Defined { .. } => effects::Any,
             Insn::GetConstant { .. } => effects::Any,
             Insn::GetConstantPath { .. } => effects::Any,
-            Insn::IsBlockGiven { .. } => Effect::read_write(abstract_heaps::Other, abstract_heaps::Empty),
+            Insn::IsBlockGiven { .. } => effects::Empty,
             Insn::FixnumBitCheck { .. } => effects::Empty,
             // IsA needs to read the class of the value and traverse the class hierarchy, which we model as reading from Memory.
             Insn::IsA { .. } => Effect::read_write(abstract_heaps::Memory, abstract_heaps::Empty),
@@ -1727,7 +1761,7 @@ impl Insn {
             Insn::InvokeSuperForward { .. } => effects::Any,
             Insn::InvokeBlock { .. } => effects::Any,
             Insn::InvokeBlockIfunc { .. } => effects::Any,
-            Insn::SendDirect { .. } => effects::Any,
+            Insn::SendDirect(_) => effects::Any,
             // TODO (nirvdrum 2026-05-28): Revisit when PushInlineFrame is
             // actually lightweight. The frame writes here pay for the spill
             // ceremony in the current full frame-push codegen. A lightweight
@@ -1795,6 +1829,7 @@ impl Insn {
             Insn::IncrCounterPtr { .. } => Effect::read_write(abstract_heaps::Empty, abstract_heaps::Other),
             Insn::CheckInterrupts { .. } => Effect::read_write(abstract_heaps::InterruptFlag, abstract_heaps::Control),
             Insn::InvokeProc { .. } => effects::Any,
+            Insn::InvokeBlockIseqDirect { .. } => effects::Any,
             Insn::RefineType { .. } => effects::Empty,
             Insn::HasType { expected, .. }
                 => Effect::read_write(
@@ -2042,7 +2077,8 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
             Insn::FixnumAref { recv, index } => write!(f, "FixnumAref {recv}, {index}"),
             Insn::Jump(target) => { write!(f, "Jump {target}") }
             Insn::CondBranch { val, if_true, if_false } => { write!(f, "CondBranch {val}, {if_true}, {if_false}") },
-            Insn::SendDirect { recv, cme, iseq, args, block, .. } => {
+            Insn::SendDirect(insn) => {
+                let SendDirectData { recv, cme, iseq, args, block, .. } = &**insn;
                 let blockiseq = block.map(|bh| match bh { BlockHandler::BlockIseq(iseq) => iseq, BlockHandler::BlockArg => unreachable!() });
                 let method_name = unsafe { (**cme).called_id };
                 write!(f, "SendDirect {recv}, {:p}, :{} ({:?})", self.ptr_map.map_ptr(&blockiseq), method_name, self.ptr_map.map_ptr(iseq))?;
@@ -2108,6 +2144,11 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
                 if *kw_splat {
                     write!(f, ", kw_splat")?;
                 }
+                Ok(())
+            }
+            Insn::InvokeBlockIseqDirect { iseq, captured, args, .. } => {
+                write!(f, "InvokeBlockIseqDirect ({:?}), {captured}", self.ptr_map.map_ptr(iseq))?;
+                write_separated!(f, ", ", ", ", args);
                 Ok(())
             }
             Insn::InvokeBuiltin { bf, args, leaf, .. } => {
@@ -2185,7 +2226,7 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
                 write!(f, "GetConstant {klass}, :{}, {allow_nil}", id.contents_lossy())
             }
             Insn::GetConstantPath { ic, .. } => { write!(f, "GetConstantPath {:p}", self.ptr_map.map_ptr(ic)) },
-            Insn::IsBlockGiven { lep } => { write!(f, "IsBlockGiven {lep}") },
+            Insn::IsBlockGiven { block_handler } => { write!(f, "IsBlockGiven {block_handler}") },
             Insn::FixnumBitCheck {val, index} => { write!(f, "FixnumBitCheck {val}, {index}") },
             Insn::CCall { cfunc, recv, args, name, owner, return_type: _, elidable: _ } => {
                 let display_name = if *owner == Qnil { name.contents_lossy().to_string() } else { qualified_method_name(*owner, *name) };
@@ -2254,10 +2295,10 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
             Insn::LoadSP => write!(f, "LoadSP"),
             &Insn::GetEP { level } => write!(f, "GetEP {level}"),
             Insn::LoadSelf => write!(f, "LoadSelf"),
-            &Insn::LoadField { recv, id, offset, return_type: _ } => {
+            &Insn::LoadField { recv, id, offset, return_type: _, num_bits: _ } => {
                 write!(f, "LoadField {recv}, :{id}@{:#x}", self.ptr_map.map_offset(offset))
             }
-            &Insn::StoreField { recv, id, offset, val } => write!(f, "StoreField {recv}, :{id}@{:#x}, {val}", self.ptr_map.map_offset(offset)),
+            &Insn::StoreField { recv, id, offset, val, num_bits: _ } => write!(f, "StoreField {recv}, :{id}@{:#x}, {val}", self.ptr_map.map_offset(offset)),
             &Insn::WriteBarrier { recv, val } => write!(f, "WriteBarrier {recv}, {val}"),
             Insn::SetIvar { self_val, id, val, .. } => write!(f, "SetIvar {self_val}, :{}, {val}", id.contents_lossy()),
             Insn::GetGlobal { id, .. } => write!(f, "GetGlobal :{}", id.contents_lossy()),
@@ -2279,7 +2320,7 @@ impl<'a> std::fmt::Display for InsnPrinter<'a> {
             Insn::ArrayExtend { left, right, .. } => write!(f, "ArrayExtend {left}, {right}"),
             Insn::ArrayPush { array, val, .. } => write!(f, "ArrayPush {array}, {val}"),
             Insn::StringIntern { val, .. } => { write!(f, "StringIntern {val}") },
-            Insn::AnyToString { val, str, .. } => { write!(f, "AnyToString {val}, str: {str}") },
+            Insn::AnyToString { val, .. } => { write!(f, "AnyToString {val}") },
             Insn::SideExit { reason, recompile, .. } => {
                 if recompile.is_some() {
                     write!(f, "SideExit {reason} recompile")
@@ -2395,28 +2436,28 @@ impl<'a> FunctionPrinter<'a> {
 /// in missing optimizations.
 #[derive(Debug)]
 struct UnionFind<T: Copy + Into<usize>> {
-    forwarded: Vec<Option<T>>,
+    forwarded: Vec<T>,
 }
 
-impl<T: Copy + Into<usize> + PartialEq> UnionFind<T> {
+impl<T: Copy + Into<usize> + PartialEq + std::convert::From<usize>> UnionFind<T> {
     fn new() -> UnionFind<T> {
         UnionFind { forwarded: vec![] }
     }
 
     /// Private. Return the internal representation of the forwarding pointer for a given element.
-    fn at(&self, idx: T) -> Option<T> {
-        self.forwarded.get(idx.into()).copied().flatten()
+    fn at(&self, idx: T) -> T {
+        self.forwarded.get(idx.into()).unwrap_or(&idx).to_owned()
     }
 
     /// Private. Set the internal representation of the forwarding pointer for the given element
     /// `idx`. Extend the internal vector if necessary.
     fn set(&mut self, idx: T, value: T) {
         if idx.into() >= self.forwarded.len() {
-            self.forwarded.resize(idx.into()+1, None);
+            for i in self.forwarded.len()..=idx.into() {
+                self.forwarded.push(i.into());
+            }
         }
-        if idx != value {
-            self.forwarded[idx.into()] = Some(value);
-        }
+        self.forwarded[idx.into()] = value;
     }
 
     /// Find the set representative for `insn`. Perform path compression at the same time to speed
@@ -2443,21 +2484,18 @@ impl<T: Copy + Into<usize> + PartialEq> UnionFind<T> {
     fn find_const(&self, insn: T) -> T {
         let mut result = insn;
         loop {
-            match self.at(result) {
-                None => return result,
-                Some(insn) => {
-                    assert!(result != insn, "cycle detected");
-                    result = insn;
-                }
-            }
+            let found = self.at(result);
+            if found == result { return found; }
+            result = found;
         }
     }
 
     /// Union the two sets containing `insn` and `target` such that every element in `insn`s set is
     /// now part of `target`'s. Neither argument must be the representative in its set.
     pub fn make_equal_to(&mut self, insn: T, target: T) {
-        let found = self.find(insn);
-        self.set(found, target);
+        let insn = self.find(insn);
+        let target = self.find(target);
+        self.set(insn, target);
     }
 }
 
@@ -2628,8 +2666,8 @@ enum IseqReturn {
     Value(VALUE),
     LocalVariable(u32),
     Receiver,
-    // Builtin descriptor and return type (if known)
-    InvokeLeafBuiltin(*const rb_builtin_function, Option<Type>),
+    // Builtin descriptor and return type
+    InvokeLeafBuiltin(*const rb_builtin_function, Type),
 }
 
 unsafe extern "C" {
@@ -2699,12 +2737,34 @@ fn iseq_get_return_value(iseq: IseqPtr, captured_opnd: Option<InsnId>, ci_flags:
             if !leaf { return None; }
             // Check if this builtin is annotated
             let return_type = ZJITState::get_method_annotations()
-                .get_builtin_properties(bf)
-                .map(|props| props.return_type);
+                .get_builtin_return_type(bf);
             Some(IseqReturn::InvokeLeafBuiltin(bf, return_type))
         }
         _ => None,
     }
+}
+
+/// True if the `invokeblock` call flags permit inlining the block dispatch.
+fn block_call_inlinable(flags: u32) -> bool {
+    (flags & (VM_CALL_ARGS_SPLAT | VM_CALL_KW_SPLAT | VM_CALL_KWARG | VM_CALL_ARGS_BLOCKARG)) == 0
+}
+
+/// True if `yield` with `argc` positional args can dispatch by inlining the block ISEQ
+/// frame. The block must take the simple callee-setup path (`rb_simple_iseq_p`)
+/// with an exact arity match, avoid arg0 auto-splat, and contain no `throw` (break /
+/// non-local return). Anything else falls back to the generic `invokeblock` dispatch.
+fn block_call_inlinable_iseq(iseq: IseqPtr, argc: usize) -> bool {
+    if !unsafe { rb_simple_iseq_p(iseq) } {
+        return false;
+    }
+    let lead_num = unsafe { rb_get_iseq_body_param_lead_num(iseq) } as usize;
+    if argc != lead_num {
+        return false;
+    }
+    if argc == 1 && !unsafe { rb_get_iseq_flags_ambiguous_param0(iseq) } {
+        return false;
+    }
+    !crate::codegen::block_iseq_may_throw(iseq)
 }
 
 impl Function {
@@ -2779,7 +2839,42 @@ impl Function {
     }
 
     pub fn load_field(&mut self, block: BlockId, recv: InsnId, id: FieldName, offset: i32, return_type: Type) -> InsnId {
-        self.push_insn(block, Insn::LoadField { recv, id, offset, return_type })
+        let num_bits = return_type.num_bits();
+        self.push_insn(block, Insn::LoadField { recv, id, offset, return_type, num_bits })
+    }
+
+    pub fn load_string_length(&mut self, block: BlockId, str: InsnId) -> InsnId {
+        self.load_field(block, str, FieldName::len, RUBY_OFFSET_RSTRING_LEN, types::CInt64)
+    }
+
+    /// Emit the fast-path `yield` dispatch to a known ISEQ block.
+    /// When `guarded`, the block handler is read from the runtime LEP and guarded (tag + iseq
+    /// identity) because the profiled block can differ per caller. When the enclosing method is
+    /// inlined and the caller passed a literal block, `gen_push_inline_frame` wrote that exact
+    /// block into this frame's EP from a compile-time constant, so both guards are unnecessary.
+    fn push_invoke_block_iseq_direct(&mut self, block: BlockId, block_iseq: IseqPtr, level: u32, args: Vec<InsnId>, state: InsnId, guarded: bool) -> InsnId {
+        let ep = self.get_ep(block, level);
+        let block_handler = self.load_ep_env_field(block, ep, FieldName::VM_ENV_DATA_INDEX_SPECVAL, VM_ENV_DATA_INDEX_SPECVAL, types::CInt64);
+
+        if guarded {
+            // Guard the handler is an ISEQ block: VM_BH_ISEQ_BLOCK_P is `& 0x3 == 0x1`.
+            let tag_mask = self.push_insn(block, Insn::Const { val: Const::CInt64(0x3) });
+            let tag = self.push_insn(block, Insn::IntAnd { left: block_handler, right: tag_mask });
+            self.push_insn(block, Insn::GuardBitEquals { val: tag, expected: Const::CInt64(0x1), reason: Box::new(SideExitReason::InvokeBlockHandlerNotIseq), state, recompile: Some(Recompile) });
+        }
+
+        // captured = block_handler & ~0x3 (struct rb_captured_block *)
+        let untag_mask = self.push_insn(block, Insn::Const { val: Const::CInt64(!0x3) });
+        let captured = self.push_insn(block, Insn::IntAnd { left: block_handler, right: untag_mask });
+
+        if guarded {
+            // Guard captured->code.iseq is the comptime block iseq. Compare the raw imemo pointer:
+            // type inference (from_value) can't type an iseq imemo, so guard it as a CPtr identity.
+            let captured_iseq = self.load_field(block, captured, FieldName::code_iseq, 2 * SIZEOF_VALUE_I32, types::CPtr);
+            self.push_insn(block, Insn::GuardBitEquals { val: captured_iseq, expected: Const::CPtr(block_iseq as *const u8), reason: Box::new(SideExitReason::InvokeBlockIseqChanged), state, recompile: Some(Recompile) });
+        }
+
+        self.push_insn(block, Insn::InvokeBlockIseqDirect { iseq: block_iseq, captured, args, state })
     }
 
     // Add an instruction to an SSA block
@@ -2930,7 +3025,7 @@ impl Function {
         if self.assume_bop_not_redefined(block, klass, bop, state) {
             return true;
         }
-        self.push_insn(block, Insn::SideExit { state, reason: SideExitReason::PatchPoint(Invariant::BOPRedefined { klass, bop }), recompile: None });
+        self.push_insn(block, Insn::SideExit { state, reason: Box::new(SideExitReason::PatchPoint(Invariant::BOPRedefined { klass, bop })), recompile: None });
         false
     }
 
@@ -3113,7 +3208,7 @@ impl Function {
             Insn::FixnumLShift { .. } => types::Fixnum,
             Insn::FixnumRShift { .. } => types::Fixnum,
             Insn::PutSpecialObject { .. } => types::BasicObject,
-            Insn::SendDirect { .. } => types::BasicObject,
+            Insn::SendDirect(_) => types::BasicObject,
             Insn::Send { .. } => types::BasicObject,
             Insn::SendForward { .. } => types::BasicObject,
             Insn::InvokeSuper { .. } => types::BasicObject,
@@ -3121,7 +3216,8 @@ impl Function {
             Insn::InvokeBlock { .. } => types::BasicObject,
             Insn::InvokeBlockIfunc { .. } => types::BasicObject,
             Insn::InvokeProc { .. } => types::BasicObject,
-            Insn::InvokeBuiltin { return_type, .. } => return_type.unwrap_or(types::BasicObject),
+            Insn::InvokeBlockIseqDirect { .. } => types::BasicObject,
+            Insn::InvokeBuiltin { return_type, .. } => *return_type,
             Insn::Defined { pushval, .. } => Type::from_value(*pushval).union(types::NilClass),
             Insn::DefinedIvar { pushval, .. } => Type::from_value(*pushval).union(types::NilClass),
             Insn::GetConstant { .. } => types::BasicObject,
@@ -3147,7 +3243,7 @@ impl Function {
             Insn::GetClassVar { .. } => types::BasicObject,
             Insn::ToNewArray { .. } => types::ArrayExact,
             Insn::ToArray { .. } => types::ArrayExact,
-            Insn::AnyToString { .. } => types::String,
+            Insn::AnyToString { .. } => types::StringExact,
             Insn::IsBlockParamModified { .. } => types::CBool,
             Insn::GetBlockParam { .. } => types::BasicObject,
             // The type of Snapshot doesn't really matter; it's never materialized. It's used only
@@ -3480,6 +3576,19 @@ impl Function {
         }
     }
 
+    fn profile_summary(&self, profiles: &ProfileOracle, recv: InsnId, state: InsnId) -> TypeDistributionSummary {
+        let Some(entries) = profiles.get(state) else {
+            return TypeDistributionSummary::empty();
+        };
+        let recv = self.chase_insn(recv);
+        for (entry_insn, entry_type_summary) in entries {
+            if self.chase_insn(*entry_insn) == recv {
+                return entry_type_summary.clone();
+            }
+        }
+        TypeDistributionSummary::empty()
+    }
+
     fn polymorphic_summary(&self, profiles: &ProfileOracle, recv: InsnId, state: InsnId) -> Option<TypeDistributionSummary> {
         let Some(entries) = profiles.get(state) else {
             return None;
@@ -3670,12 +3779,12 @@ impl Function {
 
     pub fn guard_not_frozen(&mut self, block: BlockId, recv: InsnId, state: InsnId) {
         let flags = self.load_rbasic_flags(block, recv);
-        self.push_insn(block, Insn::GuardNoBitsSet { val: flags, mask: Const::CUInt64(RUBY_FL_FREEZE as u64), mask_name: Some(ID!(RUBY_FL_FREEZE)), reason: SideExitReason::GuardNotFrozen, state });
+        self.push_insn(block, Insn::GuardNoBitsSet { val: flags, mask: Const::CUInt64(RUBY_FL_FREEZE as u64), mask_name: Some(ID!(RUBY_FL_FREEZE)), reason: Box::new(SideExitReason::GuardNotFrozen), state });
     }
 
     pub fn guard_not_shared(&mut self, block: BlockId, recv: InsnId, state: InsnId) {
         let flags = self.load_rbasic_flags(block, recv);
-        self.push_insn(block, Insn::GuardNoBitsSet { val: flags, mask: Const::CUInt64(RUBY_ELTS_SHARED as u64), mask_name: Some(ID!(RUBY_ELTS_SHARED)), reason: SideExitReason::GuardNotShared, state });
+        self.push_insn(block, Insn::GuardNoBitsSet { val: flags, mask: Const::CUInt64(RUBY_ELTS_SHARED as u64), mask_name: Some(ID!(RUBY_ELTS_SHARED)), reason: Box::new(SideExitReason::GuardNotShared), state });
     }
 
     /// `iseq` is the ISEQ that `ep_offset` is relative to, which is the ISEQ that
@@ -3746,9 +3855,14 @@ impl Function {
     /// Try trivially inlining the method. If we can't, emit a SendDirect instruction instead and
     /// leave it to the general-purpose inliner to handle.
     fn try_inline_send_direct(&mut self, block: BlockId, insn: Insn) -> InsnId {
-        let Insn::SendDirect { recv, iseq, cd, ref args, state, .. } = insn else {
+        let Insn::SendDirect(data) = &insn else {
             panic!("try_inline_send_direct called with non-SendDirect instruction");
         };
+        let recv = data.recv;
+        let iseq = data.iseq;
+        let cd = data.cd;
+        let state = data.state;
+        let args = &data.args;
         // The trivial inliner runs first to handle simple cases (constant returns,
         // parameter returns, etc.) without frame push/pop overhead. The general
         // inliner then handles more complex methods that require full inlining.
@@ -3902,7 +4016,7 @@ impl Function {
                                 self.insn_types[recv.0] = self.infer_type(recv);
                             }
 
-                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect { recv, cd, cme, iseq, args: processed_args, kw_bits, state: send_state, block: send_block });
+                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect(Box::new(SendDirectData { recv, cd, cme, iseq, args: processed_args, kw_bits, state: send_state, block: send_block })));
                             self.make_equal_to(insn_id, replacement);
                         } else if !has_block && def_type == VM_METHOD_TYPE_BMETHOD {
                             let procv = unsafe { rb_get_def_bmethod_proc((*cme).def) };
@@ -3945,7 +4059,7 @@ impl Function {
                                 recv = self.guard_type_recompile(block, recv, Type::from_profiled_type(profiled_type), state, Recompile);
                             }
 
-                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect { recv, cd, cme, iseq, args: processed_args, kw_bits, state: send_state, block: None });
+                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect(Box::new(SendDirectData { recv, cd, cme, iseq, args: processed_args, kw_bits, state: send_state, block: None })));
                             self.make_equal_to(insn_id, replacement);
                         } else if !has_block && def_type == VM_METHOD_TYPE_IVAR && args.is_empty() {
                             // Check if we're accessing ivars of a Class or Module object as they require single-ractor mode.
@@ -4080,7 +4194,7 @@ impl Function {
                                     };
 
                                     let replacement = if let (OptimizedMethodType::StructAset, &[val]) = (opt_type, args.as_slice()) {
-                                        self.push_insn(block, Insn::StoreField { recv: target, id: mid.into(), offset, val });
+                                        self.push_insn(block, Insn::StoreField { recv: target, id: mid.into(), offset, val, num_bits: types::BasicObject.num_bits() });
                                         self.push_insn(block, Insn::WriteBarrier { recv, val });
                                         val
                                     } else { // StructAref
@@ -4315,13 +4429,6 @@ impl Function {
                             self.push_insn_id(block, insn_id); continue;
                         }
                     }
-                    Insn::AnyToString { str, .. } => {
-                        if self.is_a(str, types::String) {
-                            self.make_equal_to(insn_id, str);
-                        } else {
-                            self.push_insn_id(block, insn_id);
-                        }
-                    }
                     Insn::IsMethodCfunc { val, cd, cfunc, state } if self.type_of(val).ruby_object_known() => {
                         let class = self.type_of(val).ruby_object().unwrap();
                         let cme = unsafe { rb_zjit_vm_search_method(self.iseq.into(), cd as *mut rb_call_data, class) };
@@ -4383,13 +4490,13 @@ impl Function {
                             // Load ep[VM_ENV_DATA_INDEX_ME_CREF]
                             let method_entry = fun.load_field(block, lep, FieldName::VM_ENV_DATA_INDEX_ME_CREF, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_ME_CREF, types::RubyValue);
                             // Guard that it matches the expected CME
-                            fun.push_insn(block, Insn::GuardBitEquals { val: method_entry, expected: Const::Value(current_cme.into()), reason: SideExitReason::GuardSuperMethodEntry, state, recompile: None });
+                            fun.push_insn(block, Insn::GuardBitEquals { val: method_entry, expected: Const::Value(current_cme.into()), reason: Box::new(SideExitReason::GuardSuperMethodEntry), state, recompile: None });
 
                             let block_handler = fun.load_field(block, lep, FieldName::VM_ENV_DATA_INDEX_SPECVAL, SIZEOF_VALUE_I32 * VM_ENV_DATA_INDEX_SPECVAL, types::RubyValue);
                             fun.push_insn(block, Insn::GuardBitEquals {
                                 val: block_handler,
                                 expected: Const::Value(VALUE(VM_BLOCK_HANDLER_NONE as usize)),
-                                reason: SideExitReason::UnhandledBlockArg,
+                                reason: Box::new(SideExitReason::UnhandledBlockArg),
                                 state,
                                 recompile: None,
                             });
@@ -4490,7 +4597,7 @@ impl Function {
                             emit_super_call_guards(self, block, super_cme, current_cme, mid, state, frame_state.iseq);
 
                             // Use SendDirect with the super method's CME and ISEQ.
-                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect {
+                            let replacement = self.try_inline_send_direct(block, Insn::SendDirect(Box::new(SendDirectData {
                                 recv,
                                 cd,
                                 cme: super_cme,
@@ -4499,7 +4606,7 @@ impl Function {
                                 kw_bits,
                                 state: send_state,
                                 block: None,
-                            });
+                            })));
                             self.make_equal_to(insn_id, replacement);
 
                         } else if def_type == VM_METHOD_TYPE_CFUNC {
@@ -4769,18 +4876,18 @@ impl Function {
             let mut search_start = 0;
             loop {
                 let Some(offset) = self.blocks[block.0].insns[search_start..].iter()
-                    .position(|&id| matches!(self.find(id), Insn::SendDirect { .. }))
+                    .position(|&id| matches!(self.find(id), Insn::SendDirect(..)))
                 else {
                     break;
                 };
                 let send_pos = search_start + offset;
 
                 let send_insn_id = self.blocks[block.0].insns[send_pos];
-                let Insn::SendDirect { recv, cd: _, cme, iseq, args, kw_bits, block: call_block, state }
-                    = self.find(send_insn_id)
+                let Insn::SendDirect(data) = self.find(send_insn_id)
                 else {
                     unreachable!("position {send_insn_id} is not a SendDirect");
                 };
+                let SendDirectData { recv, cme, iseq, args, kw_bits, block: call_block, state, .. } = *data;
                 // SendDirect invariant: block is either None or BlockIseq.
                 // BlockArg is rejected upstream during type specialization.
                 let blockiseq: Option<IseqPtr> = call_block.map(|bh| match bh {
@@ -4810,6 +4917,27 @@ impl Function {
                 let pre_insn_types_len = self.insn_types.len();
                 let pre_blocks_len = self.blocks.len();
 
+                // Pick the callee body entry matching how many optional parameters
+                // the caller actually filled. Entry index `k` is where execution
+                // begins when `lead_num + k + post_num + kw_num` arguments are
+                // passed: it runs the default-init code for the remaining
+                // `opt_num - k` optionals (if any) before falling through into the
+                // post-default body. SendDirect emission already guarantees
+                // args.len() lies in `lead_num + post_num + kw_num..=lead_num +
+                // opt_num + post_num + kw_num`, with `kw_num` being the callee's
+                // full keyword count (zero when the callee has no keywords). After
+                // `prepare_direct_send_args` runs, the caller's arg list has a slot
+                // for every callee keyword (filled in callee table order, padded
+                // with defaults for omitted optional keywords), so the keyword tail
+                // is a fixed-size addition we subtract off before recovering the
+                // optional-positional count.
+                let callee_params = unsafe { iseq.params() };
+                let lead_num = callee_params.lead_num as usize;
+                let opt_num = callee_params.opt_num as usize;
+                let post_num = callee_params.post_num as usize;
+                let kw_num = callee_kw_num(iseq);
+                let passed_opt_num = args.len() - lead_num - post_num - kw_num;
+
                 // Create the continuation block before translating the callee so it
                 // can serve as the return_block argument; the callee's leaves become
                 // Jumps to this block directly during translation. The continuation
@@ -4825,7 +4953,16 @@ impl Function {
                 // callee sits one level deeper (caller_depth + 1).
                 let caller_depth = self.frame_depth(state);
 
-                let mode = AddIseqMode::Inlined { return_block: continuation, caller: state, depth: caller_depth + 1 };
+                // The callee's perspective of the stack is with the receiver and arguments popped off.
+                let caller_stack_size = call_state.stack_size() - args.len() - 1; // -1 for receiver
+                let post_send_caller = self.new_insn(Insn::Snapshot { state: Box::new(call_state.with_stack_size(caller_stack_size)) });
+                let mode = AddIseqMode::Inlined {
+                    return_block: continuation,
+                    caller: post_send_caller,
+                    depth: caller_depth + 1,
+                    jit_entry_idx: passed_opt_num,
+                    blockiseq,
+                };
                 let add_result = match add_iseq_to_hir(self, iseq, mode) {
                     Ok(r) => r,
                     Err(_) => {
@@ -4852,33 +4989,13 @@ impl Function {
                 // pre-Send body, before the PushLightweightFrame and Jump we add
                 // last).
                 let tail = self.blocks[block.0].insns.split_off(send_pos);
-                debug_assert!(matches!(self.find(tail[0]), Insn::SendDirect { .. }));
+                debug_assert!(matches!(self.find(tail[0]), Insn::SendDirect(..)));
 
-                // Pick the callee body entry block matching how many optional
-                // parameters the caller actually filled. add_iseq_to_hir returns one
-                // body entry block per `jit_entry_idx`; entry index `k` is where
-                // execution begins when `lead_num + k + post_num + kw_num` arguments
-                // are passed: it runs the default-init code for the remaining
-                // `opt_num - k` optionals (if any) before falling through into the
-                // post-default body. SendDirect emission already guarantees
-                // args.len() lies in `lead_num + post_num + kw_num..=lead_num +
-                // opt_num + post_num + kw_num`, with `kw_num` being the callee's
-                // full keyword count (zero when the callee has no keywords). After
-                // `prepare_direct_send_args` runs, the caller's arg list has a slot
-                // for every callee keyword (filled in callee table order, padded
-                // with defaults for omitted optional keywords), so the keyword tail
-                // is a fixed-size addition we subtract off before recovering the
-                // optional-positional count.
-                let callee_params = unsafe { iseq.params() };
-                let lead_num = callee_params.lead_num as usize;
-                let opt_num = callee_params.opt_num as usize;
-                let post_num = callee_params.post_num as usize;
-                let kw_num = callee_kw_num(iseq);
-                let passed_opt_num = args.len() - lead_num - post_num - kw_num;
                 let omitted_opt_num = opt_num - passed_opt_num;
                 let positional_kw_end = lead_num + opt_num + post_num + kw_num;
                 let kw_bits_local_idx = callee_kw_bits_local_idx(iseq);
-                let callee_entry_body_block = add_result.body_entry_blocks[passed_opt_num];
+                let callee_entry_body_block = add_result.body_entry_block
+                    .expect("inlined compilation always produces a body entry block");
 
                 // Map callee body entry params to caller values:
                 //
@@ -4891,9 +5008,7 @@ impl Function {
                 //   * lead locals (indices 0..lead_num) and filled optional locals
                 //     (lead_num..lead_num + passed_opt_num) take args in order.
                 //   * unfilled optional locals (lead_num + passed_opt_num..lead_num + opt_num)
-                //     are nil-initialized; the body's default-init code (entered via
-                //     the chosen body_entry_blocks[passed_opt_num] target) overwrites
-                //     them.
+                //     are nil-initialized; the body's default-init code overwrites them.
                 //   * post-required and keyword locals
                 //     (lead_num + opt_num..lead_num + opt_num + post_num + kw_num) take the
                 //     trailing args, but their position in the local table leaves a gap
@@ -4972,6 +5087,10 @@ impl Function {
                 // The original SendDirect result is now the continuation's return value param.
                 self.make_equal_to(send_insn_id, return_val_param);
 
+                // Keep the caller FrameState that inlined callee Snapshots point at
+                // as a distinct Snapshot instead of rewriting the consumed SendDirect.
+                self.push_insn_id(block, post_send_caller);
+
                 // Insert PushLightweightFrame and jump to callee body entry.
                 self.push_insn(block, Insn::PushInlineFrame {
                     iseq, cme, recv, args: args.clone(), blockiseq, state,
@@ -5016,7 +5135,7 @@ impl Function {
         self.push_insn(block, Insn::GuardBitEquals {
             val,
             expected: Const::CShape(expected),
-            reason: SideExitReason::GuardShape(expected),
+            reason: Box::new(SideExitReason::GuardShape(expected)),
             state,
             recompile,
         })
@@ -5198,13 +5317,13 @@ impl Function {
             let offset = SIZEOF_VALUE_I32 * ivar_index as i32;
             (as_heap, offset)
         };
-        self.push_insn(block, Insn::StoreField { recv: ivar_storage, id: id.into(), offset, val });
+        self.push_insn(block, Insn::StoreField { recv: ivar_storage, id: id.into(), offset, val, num_bits: types::BasicObject.num_bits() });
         self.push_insn(block, Insn::WriteBarrier { recv: self_val, val });
         if next_shape_id != profiled_type.shape() {
             // Write the new shape ID
             let shape_id = self.push_insn(block, Insn::Const { val: Const::CShape(next_shape_id) });
             let shape_id_offset = unsafe { rb_shape_id_offset() };
-            self.push_insn(block, Insn::StoreField { recv: self_val, id: FieldName::shape_id, offset: shape_id_offset, val: shape_id });
+            self.push_insn(block, Insn::StoreField { recv: self_val, id: FieldName::shape_id, offset: shape_id_offset, val: shape_id, num_bits: types::CShape.num_bits() });
         }
         Ok(())
     }
@@ -5331,7 +5450,7 @@ impl Function {
             for insn_id in old_insns {
                 match self.find(insn_id) {
                     Insn::Send { state, reason: SendFallbackReason::SendWithoutBlockNoProfiles | SendFallbackReason::SendNoProfiles, .. } => {
-                        self.push_insn(block, Insn::SideExit { state, reason: SideExitReason::NoProfileSend, recompile: Some(Recompile) });
+                        self.push_insn(block, Insn::SideExit { state, reason: Box::new(SideExitReason::NoProfileSend), recompile: Some(Recompile) });
                         // SideExit is a terminator; don't add remaining instructions
                         break;
                     }
@@ -5498,19 +5617,6 @@ impl Function {
             let mut new_insns = vec![];
             for insn_id in old_insns {
                 let replacement_id = match self.find(insn_id) {
-                    // TODO (nirvdrum 2026-06-26): Folding the guard to a SideExit is a workaround,
-                    // not a proper fix. It relies on constant folding to keep an Empty-typed value
-                    // (see below) from reaching codegen; disabling this pass would let that value
-                    // through and the program would fail to compile on x86-64. Compilation correctness
-                    // should not depend on an optimization pass, so this should be replaced by a
-                    // comprehensive fix.
-                    Insn::GuardType { val, guard_type, state, recompile } if !self.type_of(val).could_be(guard_type) => {
-                        // The value's type is disjoint from the guard type, so the guard can never
-                        // pass. Every execution would side-exit here, so we replace the guard with an
-                        // unconditional exit. The terminator handling below then drops the rest of
-                        // the block, which is now unreachable.
-                        self.new_insn(Insn::SideExit { state, reason: SideExitReason::GuardType(guard_type), recompile })
-                    }
                     Insn::GuardType { val, guard_type, .. } if self.is_a(val, guard_type) => {
                         self.make_equal_to(insn_id, val);
                         // Don't bother re-inferring the type of val; we already know it.
@@ -5595,11 +5701,6 @@ impl Function {
                         } else {
                             insn_id
                         }
-                    }
-                    Insn::AnyToString { str, .. } if self.is_a(str, types::String) => {
-                        self.make_equal_to(insn_id, str);
-                        // Don't bother re-inferring the type of str; we already know it.
-                        continue;
                     }
                     Insn::IsA { val, class } => 'is_a: {
                         let class_type = self.type_of(class);
@@ -6462,7 +6563,6 @@ impl Function {
             // Instructions with 2 Ruby object operands
             Insn::SetIvar { self_val: left, val: right, .. }
             | Insn::NewRange { low: left, high: right, .. }
-            | Insn::AnyToString { val: left, str: right, .. }
             | Insn::CheckMatch { target: left, pattern: right, .. }
             | Insn::WriteBarrier { recv: left, val: right } => {
                 self.assert_subtype(insn_id, left, types::BasicObject)?;
@@ -6472,9 +6572,11 @@ impl Function {
                 self.assert_subtype(insn_id, klass, types::BasicObject)?;
                 self.assert_subtype(insn_id, allow_nil, types::BoolExact)
             }
+            Insn::AnyToString { val, .. } => {
+                self.assert_subtype(insn_id, val, types::BasicObject)
+            }
             // Instructions with recv and a Vec of Ruby objects
-            Insn::SendDirect { recv, ref args, .. }
-            | Insn::PushInlineFrame { recv, ref args, .. }
+            Insn::PushInlineFrame { recv, ref args, .. }
             | Insn::Send { recv, ref args, .. }
             | Insn::SendForward { recv, ref args, .. }
             | Insn::InvokeSuper { recv, ref args, .. }
@@ -6484,6 +6586,13 @@ impl Function {
             | Insn::ArrayInclude { target: recv, elements: ref args, .. } => {
                 self.assert_subtype(insn_id, recv, types::BasicObject)?;
                 for &arg in args {
+                    self.assert_subtype(insn_id, arg, types::BasicObject)?;
+                }
+                Ok(())
+            }
+            Insn::SendDirect(insn) => {
+                self.assert_subtype(insn_id, insn.recv, types::BasicObject)?;
+                for &arg in &insn.args {
                     self.assert_subtype(insn_id, arg, types::BasicObject)?;
                 }
                 Ok(())
@@ -6514,6 +6623,7 @@ impl Function {
             }
             // Instructions with a Vec of Ruby objects
             Insn::InvokeBlock { ref args, .. }
+            | Insn::InvokeBlockIseqDirect { ref args, .. }
             | Insn::InvokeBlockIfunc { ref args, .. }
             | Insn::NewArray { elements: ref args, .. }
             | Insn::ArrayHash { elements: ref args, .. }
@@ -6751,6 +6861,78 @@ impl Function {
         self.validate_types()?;
         Ok(())
     }
+
+    /// Return Some(InsnId) if we generated any code to load an ivar and None if we only generated
+    /// an unconditional SideExit (in which case we should end the block).
+    fn dispatch_getivar(
+        &mut self,
+        profiled_types: &Vec<ProfiledType>,
+        mut block: BlockId,
+        insn_idx: u32,
+        self_param: InsnId,
+        id: ID,
+        ic: *const iseq_inline_iv_cache_entry,
+        exit_id: InsnId,
+    ) -> Option<(BlockId, InsnId)> {
+        // 0 profiled_types: Generate a recompile exit or a fallback. No need for new HIR blocks.
+        if profiled_types.is_empty() {
+            if self.policy.no_side_exits {
+                self.count(block, Counter::getivar_fallback_no_side_exits);
+                let result = self.push_insn(block, Insn::GetIvar { self_val: self_param, id, ic, state: exit_id });
+                return Some((block, result));
+            } else {
+                self.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::NoProfileGetIvar), recompile: Some(Recompile) });
+                return None;
+            }
+        }
+        // 1 profiled_types: Generate a monomorphic getivar with a guard if allowed by policy. No need for new HIR blocks.
+        if profiled_types.len() == 1 && !self.policy.no_side_exits {
+            // 0 profiled_types: Generate a recompile exit or a fallback.
+            let actual = self.load_shape(block, self_param);
+            self.guard_shape(block, actual, profiled_types[0].shape(), exit_id, Some(Recompile));
+            let result = self.load_ivar(block, self_param, profiled_types[0], id);
+            return Some((block, result));
+        }
+
+        // Otherwise, make HIR blocks to handle different shapes or a fallback, and let them jump to join_block.
+        let edge = |target: BlockId| BranchEdge { target, args: vec![] };
+        let branch = |cond: InsnId, if_true: BlockId, if_false: BlockId| Insn::CondBranch { val: cond, if_true: edge(if_true), if_false: edge(if_false) };
+        let actual = self.load_shape(block, self_param);
+        let last_shape_index = profiled_types.len() - 1;
+        let join_block = self.new_block(insn_idx);
+        let result = self.push_insn(join_block, Insn::Param);
+        for (i, &profiled_type) in profiled_types.iter().enumerate() {
+            let load_optimized_block = self.new_block(insn_idx);
+            if i == last_shape_index {
+                if self.policy.no_side_exits {
+                    // If the policy doesn't allow exits, make a fallback block and jump to it if the shape doesn't match.
+                    let expected = self.push_insn(block, Insn::Const { val: Const::CShape(profiled_type.shape()) });
+                    let val = self.push_insn(block, Insn::IsBitEqual { left: actual, right: expected });
+                    let load_fallback_block = self.new_block(insn_idx);
+                    self.push_insn(block, branch(val, load_optimized_block, load_fallback_block));
+                    self.count(load_fallback_block, Counter::getivar_fallback_no_side_exits);
+                    let result = self.push_insn(load_fallback_block, Insn::GetIvar { self_val: self_param, id, ic, state: exit_id });
+                    self.push_insn(load_fallback_block, Insn::Jump(BranchEdge { target: join_block, args: vec![result] }));
+                } else {
+                    // If the policy allows exits, exit to the interpreter if the shape doesn't match.
+                    self.guard_shape(block, actual, profiled_type.shape(), exit_id, Some(Recompile));
+                    // TODO(max): Don't make a new block in this case
+                    self.push_insn(block, Insn::Jump(BranchEdge { target: load_optimized_block, args: vec![] }));
+                }
+            } else {
+                // If this is not the last profiled shape, let the guard jump to the next block.
+                let expected = self.push_insn(block, Insn::Const { val: Const::CShape(profiled_type.shape()) });
+                let val = self.push_insn(block, Insn::IsBitEqual { left: actual, right: expected});
+                let next_block = self.new_block(insn_idx);
+                self.push_insn(block, branch(val, load_optimized_block, next_block));
+                block = next_block;
+            }
+            // Generate the optimized getivar for the profiled_type and jump to join_block
+            let result = self.load_ivar(load_optimized_block, self_param, profiled_type, id);
+            self.push_insn(load_optimized_block, Insn::Jump(BranchEdge { target: join_block, args: vec![result] }));
+        }
+        Some((join_block, result))
+    }
 }
 
 impl<'a> std::fmt::Display for FunctionPrinter<'a> {
@@ -6821,7 +7003,7 @@ pub struct FrameState {
     stack: Vec<InsnId>,
     locals: Vec<InsnId>,
 
-    /// `InsnId` of the caller's call-site `Snapshot` for inlined frames; `None`
+    /// `InsnId` of the caller's post-send `Snapshot` for inlined frames; `None`
     /// for non-inlined frames. Stored as an instruction reference rather than
     /// an owned `FrameState` so that value remapping in the caller's `Snapshot`
     /// propagates here automatically, and so the caller's state has a single
@@ -6853,6 +7035,13 @@ impl FrameState {
     pub fn without_stack(&self) -> Self {
         let mut state = self.clone();
         state.stack.clear();
+        state
+    }
+
+    /// Return itself with a truncated stack.
+    pub fn with_stack_size(&self, stack_size: usize) -> Self {
+        let mut state = self.clone();
+        state.stack.truncate(stack_size);
         state
     }
 
@@ -6892,7 +7081,7 @@ impl FrameState {
     }
 
     /// Construct a `FrameState` for an inlined callee. `caller` is the `InsnId`
-    /// of the caller's call-site `Snapshot`; `depth` is this frame's inlining depth.
+    /// of the caller's post-send `Snapshot`; `depth` is this frame's inlining depth.
     fn inlined(iseq: IseqPtr, caller: InsnId, depth: InlineDepth) -> FrameState {
         FrameState { caller: Some(caller), depth, ..FrameState::new(iseq) }
     }
@@ -6905,6 +7094,10 @@ impl FrameState {
     /// Iterate over all stack slots
     pub fn stack(&self) -> Iter<'_, InsnId> {
         self.stack.iter()
+    }
+
+    pub fn caller(&self) -> Option<InsnId> {
+        self.caller
     }
 
     /// Iterate over all local variables
@@ -7218,29 +7411,31 @@ enum AddIseqMode {
     Standalone,
     Inlined {
         return_block: BlockId,
-        /// The caller's call-site `Snapshot`. Allows side-exits to restore the outer frame.
+        /// The caller's post-send `Snapshot`. Allows side-exits to restore the outer frame.
         caller: InsnId,
         /// Inlining depth of every frame emitted for the callee.
         depth: InlineDepth,
+        /// The JIT entry index selected by the call site's argument count.
+        jit_entry_idx: usize,
+        /// The literal block the caller passed to this frame, if any.
+        blockiseq: Option<IseqPtr>,
     },
 }
 
 /// Result of populating a Function with HIR for an ISEQ.
 struct AddIseqResult {
-    /// Body entry block per `jit_entry_idx`. Indexed by the same `passed_opt_num`
-    /// the JIT entry scaffolding uses, this is the body block the scaffolding
-    /// (when generated) targets after running default-init code for missing
-    /// optionals. Callers that pass `make_entry_blocks=false` (e.g. the inliner)
-    /// use this to pick the right entry point without needing the scaffolding.
-    body_entry_blocks: Vec<BlockId>,
+    /// The callee body entry block where the inlined callee body begins
+    /// executing, populated only in inlined mode.
+    ///
+    /// `add_iseq_to_hir` slices the opt table to begin at the entry the call
+    /// site's argument count selects. This is that entry's block.
+    /// The value is `None` in standalone mode, as standalone has no single body entry
+    /// block and wires its JIT entry blocks through `fun.jit_entry_blocks` instead.
+    body_entry_block: Option<BlockId>,
     /// Profile oracle populated during compilation. The caller decides whether
     /// to assign it to `fun.profiles` (top-level) or append it to an existing
     /// oracle (inliner).
     profiles: ProfileOracle,
-    /// Number of return paths emitted. Counts `YARVINSN_leave` translations,
-    /// whether they became `Insn::Return` or `Insn::Jump(return_block, ...)`.
-    /// Lets callers tell whether the ISEQ has any reachable return paths.
-    num_returns: usize,
 }
 
 /// Compile ISEQ into High-level IR
@@ -7287,10 +7482,9 @@ fn add_iseq_to_hir(
 ) -> Result<AddIseqResult, ParseError> {
     let payload = get_or_create_iseq_payload(iseq);
     let mut profiles = ProfileOracle::new();
-    let mut num_returns: usize = 0;
 
     // Build the initial FrameState for a block being translated. In inlined
-    // mode it carries the caller's call-site Snapshot and this frame's depth;
+    // mode it carries the caller's post-send Snapshot and this frame's depth;
     // because every Snapshot emitted for the callee is cloned from one of these
     // initial states, those values propagate to the whole inlined body without a
     // separate rewrite pass.
@@ -7301,8 +7495,23 @@ fn add_iseq_to_hir(
         }
     }
 
-    // Compute a map of PC->Block by finding jump targets
-    let jit_entry_insns = unsafe { iseq.params() }.opt_table_slice().iter().copied().map(VALUE::as_u32).collect::<Vec<_>>();
+    // Compute a map of PC->Block by finding jump targets.
+    //
+    // Standalone compilation translates every opt-table entry because each is a
+    // reachable JIT-to-JIT entrypoint. The inliner, by contrast, enters at a
+    // single entry fixed by the call site's argument count. So, the entries before
+    // it would run default-init code for optionals the caller already supplied.
+    // Those entries are known to be unreachable so slicing them off here avoids
+    // translating prologue blocks that would only be discarded later, rather
+    // than emitting them and relying on a downstream pass to prune the dead CFG.
+    let jit_entry_start = match mode {
+        AddIseqMode::Standalone => 0,
+        AddIseqMode::Inlined { jit_entry_idx, .. } => jit_entry_idx,
+    };
+    let jit_entry_insns = unsafe { iseq.params() }.opt_table_slice()
+        .get(jit_entry_start..)
+        .expect("JIT entry index must be within the callee opt table")
+        .iter().copied().map(VALUE::as_u32).collect::<Vec<_>>();
     let BytecodeInfo { jump_targets } = compute_bytecode_info(iseq, &jit_entry_insns);
 
     let compile_jit_entries = matches!(mode, AddIseqMode::Standalone) && iseq_supports_jit_entry(iseq);
@@ -7310,15 +7519,18 @@ fn add_iseq_to_hir(
     // Make all empty basic blocks. The ordering of the BBs matters for getting fallthrough jumps
     // in good places, but it's not necessary for correctness. TODO: Higher quality scheduling during lowering.
     let mut insn_idx_to_block = HashMap::new();
-    let mut body_entry_blocks = Vec::with_capacity(jit_entry_insns.len());
-    // Make blocks for optionals first, and put them right next to their JIT entrypoint
+    // Materialize a block at each opt-table entry PC, placing each right after
+    // its JIT-to-JIT entry block so fallthrough jumps land in good places.
+    // Standalone mode emits a real JIT entry block per entry. Inlined mode emits
+    // none here; only `body_entry_block` (the first sliced entry) is the inlined
+    // body's entry, and the rest are default-init body blocks reached by
+    // fallthrough.
     for insn_idx in jit_entry_insns.iter().copied() {
         if compile_jit_entries {
             let jit_entry_block = fun.new_block(insn_idx);
             fun.jit_entry_blocks.push(jit_entry_block);
         }
-        let body_entry = *insn_idx_to_block.entry(insn_idx).or_insert_with(|| fun.new_block(insn_idx));
-        body_entry_blocks.push(body_entry);
+        insn_idx_to_block.entry(insn_idx).or_insert_with(|| fun.new_block(insn_idx));
     }
     // Make blocks for the rest of the jump targets
     for insn_idx in jump_targets {
@@ -7326,6 +7538,17 @@ fn add_iseq_to_hir(
     }
     // Done, drop `mut`.
     let insn_idx_to_block = insn_idx_to_block;
+
+    // The callee body entry block where the inlined callee body begins
+    // executing. `jit_entry_insns` starts at the entry the call site selected
+    // (since `opt_table_slice` was sliced above), so its first element is that entry.
+    // Any later entries are the default-init blocks for the remaining unfilled
+    // optionals, reached from this one by fallthrough rather than targeted directly.
+    // Standalone compilation has no single body entry block, so it produces none.
+    let body_entry_block = match mode {
+        AddIseqMode::Standalone => None,
+        AddIseqMode::Inlined { .. } => Some(insn_idx_to_block[&jit_entry_insns[0]]),
+    };
 
     if matches!(mode, AddIseqMode::Standalone) {
         // Compile an entry_block for the interpreter
@@ -7576,7 +7799,7 @@ fn add_iseq_to_hir(
                         }
                         _ => {
                             // Unknown opcode; side-exit into the interpreter
-                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledNewarraySend(method), recompile: None });
+                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledNewarraySend(method)), recompile: None });
                             break;  // End the block
                         }
                     };
@@ -7602,7 +7825,7 @@ fn add_iseq_to_hir(
                     let bop = match method_id {
                         x if x == ID!(include_p).0 => BOP_INCLUDE_P,
                         _ => {
-                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledDuparraySend(method_id), recompile: None });
+                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledDuparraySend(method_id)), recompile: None });
                             break;
                         },
                     };
@@ -7649,11 +7872,11 @@ fn add_iseq_to_hir(
                         .and_then(|types| types.first())
                         .map(|dist| TypeDistributionSummary::new(dist));
                     let Some(summary) = summary else {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SplatKwNotProfiled, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SplatKwNotProfiled), recompile: None });
                         break;  // End the block
                     };
                     if !summary.is_monomorphic() {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SplatKwPolymorphic, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SplatKwPolymorphic), recompile: None });
                         break;  // End the block
                     }
                     let ty = Type::from_profiled_type(summary.bucket(0));
@@ -7662,7 +7885,7 @@ fn add_iseq_to_hir(
                     } else if ty.is_subtype(types::HashExact) {
                         fun.push_insn(block, Insn::GuardType { val: hash, guard_type: types::HashExact, state: exit_id, recompile: None })
                     } else {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SplatKwNotNilOrHash, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SplatKwNotNilOrHash), recompile: None });
                         break;  // End the block
                     };
                     state.stack_push(obj);
@@ -7808,7 +8031,7 @@ fn add_iseq_to_hir(
                     // This can only happen in iseqs taking more than 32 keywords.
                     // In this case, we side exit to the interpreter.
                     if unsafe {(*rb_get_iseq_body_param_keyword(iseq)).num >= VM_KW_SPECIFIED_BITS_MAX.try_into().unwrap()} {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::TooManyKeywordParameters, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::TooManyKeywordParameters), recompile: None });
                         break;
                     }
                     let ep_offset = get_arg(pc, 0).as_u32();
@@ -8105,6 +8328,7 @@ fn add_iseq_to_hir(
                         id: FieldName::VM_ENV_DATA_INDEX_FLAGS,
                         offset: SIZEOF_VALUE_I32 * (VM_ENV_DATA_INDEX_FLAGS as i32),
                         val: modified,
+                        num_bits: types::CInt64.num_bits(),
                     });
                 }
                 YARVINSN_getblockparamproxy => {
@@ -8200,7 +8424,7 @@ fn add_iseq_to_hir(
                             // So to check for either of those cases we can use: val & 0x1 == 0x1
 
                             // Bail out if the block handler is neither ISEQ nor ifunc
-                            fun.push_insn(unmodified_block, Insn::GuardAnyBitSet { val: block_handler, mask: Const::CUInt64(0x1), mask_name: None, reason: SideExitReason::BlockParamProxyFallbackMiss, state: exit_id, recompile: Some(Recompile) });
+                            fun.push_insn(unmodified_block, Insn::GuardAnyBitSet { val: block_handler, mask: Const::CUInt64(0x1), mask_name: None, reason: Box::new(SideExitReason::BlockParamProxyFallbackMiss), state: exit_id, recompile: Some(Recompile) });
                             // TODO(Shopify/ruby#753): GC root, so we should be able to avoid unnecessary GC tracing
                             let proxy_val = fun.push_insn(unmodified_block, Insn::Const { val: Const::Value(unsafe { rb_block_param_proxy }) });
                             let mut args = vec![proxy_val];
@@ -8213,7 +8437,7 @@ fn add_iseq_to_hir(
                         [profiled_handler] => match profiled_handler {
                             ProfiledBlockHandlerFamily::Nil => {
                                 let block_handler = fun.load_ep_env_field(unmodified_block, ep, FieldName::VM_ENV_DATA_INDEX_SPECVAL, VM_ENV_DATA_INDEX_SPECVAL, types::CInt64);
-                                fun.push_insn(unmodified_block, Insn::GuardBitEquals { val: block_handler, expected: Const::CInt64(VM_BLOCK_HANDLER_NONE.into()), reason: SideExitReason::BlockParamProxyNotNil, state: exit_id, recompile: Some(Recompile) });
+                                fun.push_insn(unmodified_block, Insn::GuardBitEquals { val: block_handler, expected: Const::CInt64(VM_BLOCK_HANDLER_NONE.into()), reason: Box::new(SideExitReason::BlockParamProxyNotNil), state: exit_id, recompile: Some(Recompile) });
                                 let nil_val = fun.push_insn(unmodified_block, Insn::Const { val: Const::Value(Qnil) });
                                 let mut args = vec![nil_val];
                                 if let Some(local) = original_local {
@@ -8230,7 +8454,7 @@ fn add_iseq_to_hir(
                                 // So to check for either of those cases we can use: val & 0x1 == 0x1
 
                                 // Bail out if the block handler is neither ISEQ nor ifunc
-                                fun.push_insn(unmodified_block, Insn::GuardAnyBitSet { val: block_handler, mask: Const::CUInt64(0x1), mask_name: None, reason: SideExitReason::BlockParamProxyNotIseqOrIfunc, state: exit_id, recompile: Some(Recompile) });
+                                fun.push_insn(unmodified_block, Insn::GuardAnyBitSet { val: block_handler, mask: Const::CUInt64(0x1), mask_name: None, reason: Box::new(SideExitReason::BlockParamProxyNotIseqOrIfunc), state: exit_id, recompile: Some(Recompile) });
                                 // TODO(Shopify/ruby#753): GC root, so we should be able to avoid unnecessary GC tracing
                                 let proxy_val = fun.push_insn(unmodified_block, Insn::Const { val: Const::Value(unsafe { rb_block_param_proxy }) });
                                 let mut args = vec![proxy_val];
@@ -8250,7 +8474,7 @@ fn add_iseq_to_hir(
                                     return_type: types::BasicObject,
                                     elidable: true,
                                 });
-                                fun.push_insn(unmodified_block, Insn::GuardBitEquals { val: is_proc, expected: Const::Value(Qtrue), reason: SideExitReason::BlockParamProxyNotProc, state: exit_id, recompile: Some(Recompile) });
+                                fun.push_insn(unmodified_block, Insn::GuardBitEquals { val: is_proc, expected: Const::Value(Qtrue), reason: Box::new(SideExitReason::BlockParamProxyNotProc), state: exit_id, recompile: Some(Recompile) });
                                 let mut args = vec![proc_val];
                                 if let Some(local) = original_local {
                                     args.push(local);
@@ -8354,7 +8578,7 @@ fn add_iseq_to_hir(
                                 }
                             }
 
-                            fun.push_insn(current_block, Insn::SideExit { state: exit_id, reason: SideExitReason::BlockParamProxyProfileNotCovered, recompile: None });
+                            fun.push_insn(current_block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::BlockParamProxyProfileNotCovered), recompile: None });
                         }
                     }
 
@@ -8447,7 +8671,7 @@ fn add_iseq_to_hir(
                     let flags = unsafe { rb_vm_ci_flag(call_info) };
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle the call type; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     let argc = crate::profile::num_arguments_on_stack(cd);
@@ -8455,7 +8679,7 @@ fn add_iseq_to_hir(
 
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let args = state.stack_pop_n(argc as usize)?;
@@ -8502,7 +8726,6 @@ fn add_iseq_to_hir(
                 YARVINSN_leave => {
                     fun.push_insn(block, Insn::CheckInterrupts { state: exit_id });
                     let val = state.stack_pop()?;
-                    num_returns += 1;
                     match mode {
                         AddIseqMode::Standalone => fun.push_insn(block, Insn::Return { val }),
                         AddIseqMode::Inlined { return_block, .. } => { fun.push_insn(block, Insn::Jump(BranchEdge { target: return_block, args: vec![val] })) }
@@ -8546,7 +8769,7 @@ fn add_iseq_to_hir(
                     let flags = unsafe { rb_vm_ci_flag(call_info) };
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle tailcall; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     let argc = crate::profile::num_arguments_on_stack(cd);
@@ -8563,7 +8786,7 @@ fn add_iseq_to_hir(
                         if mid == ID!(induce_side_exit_bang)
                             && state::zjit_module_method_match_serial(ID!(induce_side_exit_bang), &state::INDUCE_SIDE_EXIT_SERIAL)
                         {
-                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::DirectiveInduced, recompile: None });
+                            fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::DirectiveInduced), recompile: None });
                             break;  // End the block
                         }
                         if mid == ID!(induce_compile_failure_bang)
@@ -8582,7 +8805,7 @@ fn add_iseq_to_hir(
 
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
 
@@ -8640,12 +8863,12 @@ fn add_iseq_to_hir(
                     let flags = unsafe { rb_vm_ci_flag(call_info) };
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle tailcall; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let block_arg = (flags & VM_CALL_ARGS_BLOCKARG) != 0;
@@ -8678,12 +8901,12 @@ fn add_iseq_to_hir(
                     let forwarding = (flags & VM_CALL_FORWARDING) != 0;
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle the call type; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let argc = unsafe { vm_ci_argc((*cd).ci) };
@@ -8707,12 +8930,12 @@ fn add_iseq_to_hir(
                     let flags = unsafe { rb_vm_ci_flag(call_info) };
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle tailcall; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let args = state.stack_pop_n(crate::profile::num_arguments_on_stack(cd))?;
@@ -8737,12 +8960,12 @@ fn add_iseq_to_hir(
                     let forwarding = (flags & VM_CALL_FORWARDING) != 0;
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle tailcall; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let argc = unsafe { vm_ci_argc((*cd).ci) };
@@ -8765,25 +8988,61 @@ fn add_iseq_to_hir(
                     let flags = unsafe { rb_vm_ci_flag(call_info) };
                     if let Err(call_type) = unhandled_call_type(flags) {
                         // Can't handle tailcall; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledCallType(call_type), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledCallType(call_type)), recompile: None });
                         break;  // End the block
                     }
                     // Side-exit send fallbacks while tracing to avoid FLAG_FINISH breaking throw TAG_RETURN semantics
                     if unsafe { rb_zjit_iseq_tracing_currently_enabled() } {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::SendWhileTracing, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::SendWhileTracing), recompile: None });
                         break;
                     }
                     let args = state.stack_pop_n(crate::profile::num_arguments_on_stack(cd))?;
 
-                    // Check if this is a monomorphic IFUNC block handler we can specialize
+                    // The monomorphic block handler class the profile recorded, if any. Both the
+                    // IFUNC and inline-ISEQ specializations below key off this single distribution.
                     let block_handler_types = payload.profile.get_operand_types(exit_state.insn_idx);
-                    let is_ifunc = (flags & (VM_CALL_ARGS_SPLAT | VM_CALL_KW_SPLAT)) == 0
-                        && block_handler_types.is_some_and(|types| types.len() == 1 && {
-                            let summary = TypeDistributionSummary::new(&types[0]);
-                            summary.is_monomorphic() && unsafe { rb_IMEMO_TYPE_P(summary.bucket(0).class(), imemo_ifunc) == 1 }
-                        });
+                    let block_handler_class = block_handler_types.and_then(|types| {
+                        if types.len() != 1 { return None; }
+                        let summary = TypeDistributionSummary::new(&types[0]);
+                        if !summary.is_monomorphic() { return None; }
+                        Some(summary.bucket(0).class())
+                    });
 
-                    let result = if is_ifunc {
+                    let is_ifunc = (flags & (VM_CALL_ARGS_SPLAT | VM_CALL_KW_SPLAT)) == 0
+                        && block_handler_class.is_some_and(|obj| unsafe { rb_IMEMO_TYPE_P(obj, imemo_ifunc) == 1 });
+
+                    // If the block handler is a known simple ISEQ block with exact arity and no
+                    // non-local exit, push its frame inline instead of calling rb_vm_invokeblock.
+                    let inline_iseq = if block_call_inlinable(flags) {
+                        block_handler_class.and_then(|obj| {
+                            if unsafe { rb_IMEMO_TYPE_P(obj, imemo_iseq) == 1 } {
+                                let iseq = obj.as_iseq();
+                                if block_call_inlinable_iseq(iseq, args.len()) { return Some(iseq); }
+                            }
+                            None
+                        })
+                    } else { None };
+
+                    let inlined_known_block = if let AddIseqMode::Inlined { blockiseq: Some(bi), .. } = mode {
+                        if block_call_inlinable(flags)
+                            // Only methods are inlined today, so exit_state.iseq is always a method iseq and this is
+                            // always 0. That matters because the emit below is guard-free and bakes in both level 0
+                            // and *this* frame's block (bi) — sound only when the yield resolves to this exact frame.
+                            // TODO: if block iseqs become inlinable, a yield here could resolve to an ancestor frame
+                            // (level > 0). To stay guard-free we'd bake in get_lvar_level(...) as the level and fetch
+                            // that ancestor's blockiseq from the inline caller chain instead of bi.
+                            && get_lvar_level(exit_state.iseq) == 0
+                            && block_call_inlinable_iseq(bi, args.len()) {
+                            Some(bi)
+                        } else { None }
+                    } else { None };
+
+                    let result = if let Some(block_iseq) = inlined_known_block {
+                        fun.push_invoke_block_iseq_direct(block, block_iseq, 0, args, exit_id, false)
+                    } else if let Some(block_iseq) = inline_iseq {
+                        let level = get_lvar_level(exit_state.iseq);
+                        fun.push_invoke_block_iseq_direct(block, block_iseq, level, args, exit_id, true)
+                    } else if is_ifunc {
                         // Load the block handler from the current frame's LEP. In inlined
                         // code, the function ISEQ is the caller while `exit_state.iseq` is the
                         // callee containing this `invokeblock`.
@@ -8851,71 +9110,45 @@ fn add_iseq_to_hir(
                     // TODO: We only really need this if self_val is a class/module
                     if !fun.assume_single_ractor_mode(block, exit_id) {
                         // gen_getivar assumes single Ractor; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledYARVInsn(opcode), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledYARVInsn(opcode)), recompile: None });
                         break;  // End the block
                     }
-                    if let Some(summary) = fun.polymorphic_summary(&profiles, self_param, exit_id) {
-                        self_param = fun.push_insn(block, Insn::GuardType { val: self_param, guard_type: types::HeapBasicObject, state: exit_id, recompile: None });
-                        let join_block = fun.new_block(insn_idx);
-                        let join_param = fun.push_insn(join_block, Insn::Param);
-                        // Dedup by expected shape so objects with different classes but the same shape can share code
-                        // TODO(max): De-duplicate further by checking ivar offsets to allow
-                        // different shapes with the same ivar layout to share code
-                        let mut seen_shape = Vec::with_capacity(summary.buckets().len());
-                        for &profiled_type in summary.buckets() {
-                            // End of the buckets
-                            if profiled_type.is_empty() { break; }
-                            // Instance variable lookups on immediate values are always nil; don't bother
-                            if profiled_type.flags().is_immediate() { continue; }
-                            let profiled_shape = profiled_type.shape();
-                            assert!(profiled_shape.is_valid());
-                            // Too-complex shapes use hash tables for ivars;
-                            // rb_shape_get_iv_index doesn't work for them.
-                            // Let the fallthrough GetIvar handle these.
-                            if profiled_shape.is_complex() { continue; }
-                            if seen_shape.contains(&profiled_shape) { continue; }
-                            seen_shape.push(profiled_shape);
-                            let actual_shape = fun.load_shape(block, self_param);
-                            // Load the expected shape to a variable
-                            let expected_shape = fun.push_insn(block, Insn::Const { val: Const::CShape(profiled_shape) });
-                            let has_shape = fun.push_insn(block, Insn::IsBitEqual { left: actual_shape, right: expected_shape });
-                            let iftrue_block = fun.new_block(insn_idx);
-                            let target = BranchEdge { target: iftrue_block, args: vec![] };
-                            let fall_through = fun.new_block(insn_idx);
-
-                            fun.push_insn(block, Insn::CondBranch { val: has_shape,
-                                if_true: target,
-                                if_false: BranchEdge { target: fall_through, args: vec![] }
-                            });
-
-                            block = fall_through;
-                            let result = fun.load_ivar(iftrue_block, self_param, profiled_type, id);
-                            fun.push_insn(iftrue_block, Insn::Jump(BranchEdge { target: join_block, args: vec![result] }));
+                    let summary = fun.profile_summary(&profiles, self_param, exit_id);
+                    let self_param = fun.guard_heap(block, self_param, exit_id);
+                    // Filter out profiled types we don't care to optimize
+                    let profiled_types = summary.buckets().iter().filter(|profiled_type| {
+                        // Don't read past the end of the profiled types
+                        !profiled_type.is_empty()
+                        // Instance variable lookups on immediate values are always nil; don't bother
+                        && !profiled_type.flags().is_immediate()
+                        // Too-complex shapes use hash tables for ivars;
+                        // rb_shape_get_iv_index doesn't work for them.
+                        // Let the fallthrough GetIvar handle these.
+                        && !profiled_type.shape().is_complex()
+                    }).collect::<Vec<_>>();
+                    // We might have two objects of class A and B with the same shape; de-duplicate
+                    // profiled types by shape. This is just an optimization to reduce code size.
+                    let mut profiled_types_unique_shapes = Vec::with_capacity(profiled_types.len());
+                    for &profiled_type in profiled_types {
+                        if profiled_types_unique_shapes.iter().any(|t: &ProfiledType| t.shape() == profiled_type.shape()) {
+                            continue;
                         }
-                        // In the fallthrough case, do a generic interpreter getivar and then join.
-                        let result = fun.push_insn(block, Insn::GetIvar { self_val: self_param, id, ic, state: exit_id });
-                        fun.push_insn(block, Insn::Jump(BranchEdge { target: join_block, args: vec![result] }));
-                        state.stack_push(join_param);
-                        // Continue compilation from the join block at the next instruction.
-                        // Make a copy of the current state without the args (pop the receiver
-                        // and push the result) because we just use the locals/stack sizes to
-                        // make the right number of Params
-                        block = join_block;
-                    } else {
-                        if let Some(profiled_type) = fun.monomorphic_summary(&profiles, self_param, exit_id) {
-                            let result = fun.try_emit_optimized_getivar(block, self_param, id, profiled_type, exit_id).unwrap_or_else(|counter| {
-                                fun.count(block, counter);
-                                fun.push_insn(block, Insn::GetIvar { self_val: self_param, id, ic, state: exit_id })
-                            });
-                            state.stack_push(result);
-                        } else {
-                            let resolution = fun.resolve_receiver_type_from_profile(self_param, exit_id);
-                            let counter = Function::getivar_fallback_reason(resolution, ic);
-                            fun.count(block, counter);
-                            let result = fun.push_insn(block, Insn::GetIvar { self_val: self_param, id, ic, state: exit_id });
-                            state.stack_push(result);
-                        }
+                        profiled_types_unique_shapes.push(profiled_type);
                     }
+                    let Some((new_block, result)) = fun.dispatch_getivar(
+                        &profiled_types_unique_shapes,
+                        block,
+                        insn_idx,
+                        self_param,
+                        id,
+                        ic,
+                        exit_id,
+                    ) else {
+                        // Side-exiting unconditionally; end the block
+                        break;
+                    };
+                    block = new_block;
+                    state.stack_push(result);
                 }
                 YARVINSN_setinstancevariable => {
                     let id = ID(get_arg(pc, 0).as_u64());
@@ -8924,7 +9157,7 @@ fn add_iseq_to_hir(
                     // TODO: We only really need this if self_val is a class/module
                     if !fun.assume_single_ractor_mode(block, exit_id) {
                         // gen_setivar assumes single Ractor; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledYARVInsn(opcode), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledYARVInsn(opcode)), recompile: None });
                         break;  // End the block
                     }
                     let val = state.stack_pop()?;
@@ -8976,7 +9209,7 @@ fn add_iseq_to_hir(
                     // TODO: Support passing arguments on the stack in C calls
                     // +2 for ec, self
                     if (unsafe { (*bf).argc } + 2) as usize > C_ARG_OPNDS.len() {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::TooManyArgsForLir, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::TooManyArgsForLir), recompile: None });
                         break; // End the block
                     }
 
@@ -8989,8 +9222,7 @@ fn add_iseq_to_hir(
 
                     // Check if this builtin is annotated
                     let return_type = ZJITState::get_method_annotations()
-                        .get_builtin_properties(bf)
-                        .map(|props| props.return_type);
+                        .get_builtin_return_type(bf);
 
                     let builtin_attrs = unsafe { rb_jit_iseq_builtin_attrs(iseq) };
                     let leaf = builtin_attrs & BUILTIN_ATTR_LEAF != 0;
@@ -9012,7 +9244,7 @@ fn add_iseq_to_hir(
                     // +2 for ec, self
                     let argc = unsafe { (*bf).argc } as usize;
                     if argc + 2 > C_ARG_OPNDS.len() {
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::TooManyArgsForLir, recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::TooManyArgsForLir), recompile: None });
                         break; // End the block
                     }
 
@@ -9025,8 +9257,7 @@ fn add_iseq_to_hir(
 
                     // Check if this builtin is annotated
                     let return_type = ZJITState::get_method_annotations()
-                        .get_builtin_properties(bf)
-                        .map(|props| props.return_type);
+                        .get_builtin_return_type(bf);
 
                     let builtin_attrs = unsafe { rb_jit_iseq_builtin_attrs(iseq) };
                     let leaf = builtin_attrs & BUILTIN_ATTR_LEAF != 0;
@@ -9083,8 +9314,26 @@ fn add_iseq_to_hir(
                     let str = state.stack_pop()?;
                     let val = state.stack_pop()?;
 
-                    let anytostring = fun.push_insn(block, Insn::AnyToString { val, str, state: exit_id });
-                    state.stack_push(anytostring);
+                    // Mirror logic of rb_obj_as_string_result() (`anytostring` in insns.def)
+                    let has_type = fun.push_insn(block, Insn::HasType { val: str, expected: types::String });
+                    let iftrue_block = fun.new_block(insn_idx);
+                    let iffalse_block = fun.new_block(insn_idx);
+                    let join_block = fun.new_block(insn_idx);
+                    fun.push_insn(block, Insn::CondBranch {
+                        val: has_type,
+                        if_true: BranchEdge { target: iftrue_block, args: vec![] },
+                        if_false: BranchEdge { target: iffalse_block, args: vec![] }
+                    });
+                    // true block
+                    let refined = fun.push_insn(iftrue_block, Insn::RefineType { val: str, new_type: types::String });
+                    fun.push_insn(iftrue_block, Insn::Jump(BranchEdge { target: join_block, args: vec![refined] }));
+                    // false block
+                    let anytostring = fun.push_insn(iffalse_block, Insn::AnyToString { val, state: exit_id });
+                    fun.push_insn(iffalse_block, Insn::Jump(BranchEdge { target: join_block, args: vec![anytostring] }));
+                    // join block
+                    block = join_block;
+                    let result = fun.push_insn(join_block, Insn::Param);
+                    state.stack_push(result);
                 }
                 YARVINSN_getspecial => {
                     let key = get_arg(pc, 0).as_u64();
@@ -9092,7 +9341,7 @@ fn add_iseq_to_hir(
 
                     if svar == 0 {
                         // TODO: Handle non-backref
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnknownSpecialVariable(key), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnknownSpecialVariable(key)), recompile: None });
                         // End the block
                         break;
                     } else if svar & 0x01 != 0 {
@@ -9115,14 +9364,14 @@ fn add_iseq_to_hir(
                         // (reverse?)
                         //
                         // Unhandled opcode; side-exit into the interpreter
-                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledYARVInsn(opcode), recompile: None });
+                        fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledYARVInsn(opcode)), recompile: None });
                         break;  // End the block
                     }
                     let val = state.stack_pop()?;
                     let array = fun.push_insn(block, Insn::GuardType { val, guard_type: types::ArrayExact, state: exit_id, recompile: None });
                     let length = fun.push_insn(block, Insn::ArrayLength { array });
                     let expected = fun.push_insn(block, Insn::Const { val: Const::CInt64(num as i64) });
-                    fun.push_insn(block, Insn::GuardGreaterEq { left: length, right: expected, reason: SideExitReason::ExpandArray, state: exit_id });
+                    fun.push_insn(block, Insn::GuardGreaterEq { left: length, right: expected, reason: Box::new(SideExitReason::ExpandArray), state: exit_id });
                     for i in (0..num).rev() {
                         // We do not emit a length guard here because in-bounds is already
                         // ensured by the expandarray length check above.
@@ -9133,7 +9382,7 @@ fn add_iseq_to_hir(
                 }
                 _ => {
                     // Unhandled opcode; side-exit into the interpreter
-                    fun.push_insn(block, Insn::SideExit { state: exit_id, reason: SideExitReason::UnhandledYARVInsn(opcode), recompile: None });
+                    fun.push_insn(block, Insn::SideExit { state: exit_id, reason: Box::new(SideExitReason::UnhandledYARVInsn(opcode)), recompile: None });
                     break;  // End the block
                 }
             }
@@ -9162,7 +9411,7 @@ fn add_iseq_to_hir(
         }
     }
 
-    Ok(AddIseqResult { body_entry_blocks, profiles, num_returns })
+    Ok(AddIseqResult { body_entry_block, profiles })
 }
 
 /// Compile an entry_block for the interpreter
@@ -9341,6 +9590,7 @@ fn compile_jit_entry_state(fun: &mut Function, jit_entry_block: BlockId, jit_ent
                 id: local_id.into(),
                 offset: -(SIZEOF_VALUE_I32 * ep_offset),
                 val: local,
+                num_bits: types::BasicObject.num_bits(),
             });
         }
     }
@@ -9614,6 +9864,12 @@ mod union_find_tests {
     }
 
     #[test]
+    fn test_find_with_unknown_element_returns_self() {
+        let mut uf = UnionFind::new();
+        assert_eq!(uf.find(10usize), 10);
+    }
+
+    #[test]
     fn test_find_halts_with_identity_make_equal_to() {
         let mut uf = UnionFind::<usize>::new();
         uf.make_equal_to(0, 0);
@@ -9634,9 +9890,20 @@ mod union_find_tests {
         let mut uf = UnionFind::new();
         uf.make_equal_to(3, 4);
         uf.make_equal_to(4, 5);
-        assert_eq!(uf.at(3usize), Some(4));
+        assert_eq!(uf.at(3usize), 4);
         assert_eq!(uf.find(3usize), 5);
-        assert_eq!(uf.at(3usize), Some(5));
+        assert_eq!(uf.at(3usize), 5);
+    }
+
+    #[test]
+    fn test_make_equal_to_does_not_create_cycles() {
+        let mut uf = UnionFind::new();
+        uf.make_equal_to(3, 4);
+        uf.make_equal_to(4, 5);
+        uf.make_equal_to(5, 3);
+        assert_eq!(uf.find(3usize), 5);
+        assert_eq!(uf.find(4usize), 5);
+        assert_eq!(uf.find(5usize), 5);
     }
 }
 
