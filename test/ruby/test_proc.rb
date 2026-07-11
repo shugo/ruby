@@ -638,7 +638,8 @@ class TestProc < Test::Unit::TestCase
       end
       orig = RefHolder::PROC
       # Store a memo in the main Ractor first, then refine the same shareable
-      # proc in another Ractor: the memo must not be reused across Ractors.
+      # proc in another Ractor: cross-Ractor reuse of the memo is legal
+      # because the memoized cref's refinements table is frozen and shareable.
       assert_equal("HI!", orig.refined(RefMod).call("hi"))
       r = Ractor.new(orig) { |pr| pr.refined(RefMod).call("hi") }
       assert_equal("HI!", r.value)

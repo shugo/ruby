@@ -454,6 +454,18 @@ proc_refined(int argc, VALUE *argv, VALUE self)
                 rb_using_module_recursive(cref, argv[i]);
             }
         }
+        /* Make the refinements table shareable so the memoized cref can be
+         * reused from any Ractor: the cref imemo itself is always allocated
+         * shareable (vm_cref_new0), and its refinements Hash is the only
+         * Ractor-local part.  CREF_OMOD_SHARED makes every later mutation
+         * path (rb_using_refinement, cref pushes in vm_cref_new0)
+         * copy-on-write, so the frozen Hash is never written again. */
+        VALUE refs = CREF_REFINEMENTS(cref);
+        if (!NIL_P(refs)) {
+            OBJ_FREEZE(refs);
+            RB_OBJ_SET_SHAREABLE(refs);
+        }
+        CREF_OMOD_SHARED_SET(cref);
         new_cref = cref;
         rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }

@@ -1149,7 +1149,12 @@ vm_caller_setup_arg_block(const rb_execution_context_t *ec, rb_control_frame_t *
                     rb_ary_push(callback_arg, ref);
                     OBJ_FREEZE(callback_arg);
                     func = rb_func_lambda_new(refine_sym_proc_call, callback_arg, 1, UNLIMITED_ARGUMENTS);
-                    rb_hash_aset(ref, block_code, func);
+                    /* Proc#refined freezes the refinements table so the
+                     * memoized cref can be shared across Ractors; skip the
+                     * cache then and rebuild the lambda per call. */
+                    if (!OBJ_FROZEN(ref)) {
+                        rb_hash_aset(ref, block_code, func);
+                    }
                 }
                 block_code = func;
             }

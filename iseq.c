@@ -246,22 +246,22 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * Copying an iseq (rb_iseq_dup_with_independent_caches in compile.c) is
  * expensive, so the most recent {copied iseq, cref} pair produced from a
  * given source iseq is memoized on the source iseq's body, keyed by
- * (ractor, base_cref, modules).  Repeatedly calling Proc#refined on the
- * same proc with the same modules then reuses the copy instead of
- * rebuilding it.  Sharing a copy is safe because all results for one key
- * run under the same refinement set, so their inline caches resolve
- * identically.
+ * (base_cref, modules).  Repeatedly calling Proc#refined on the same proc
+ * with the same modules then reuses the copy instead of rebuilding it.
+ * Sharing a copy is safe because all results for one key run under the
+ * same refinement set, so their inline caches resolve identically.
  *
- * The creating Ractor is part of the key because the memoized cref
- * references Ractor-local, non-shareable state (its refinements Hash): a
- * block iseq is reachable from multiple Ractors (through a shareable proc,
- * or simply because the same block literal runs in several Ractors), and
- * without the Ractor check a lookup from Ractor B would hand out a cref
- * created by Ractor A.
+ * A block iseq is reachable from multiple Ractors (through a shareable
+ * proc, or simply because the same block literal runs in several Ractors),
+ * so a lookup may return a memo stored by another Ractor.  That is safe
+ * because everything in the memo is shareable: crefs always are, iseqs
+ * always are, and proc_refined freezes the cref's refinements Hash (whose
+ * contents are classes and iclasses, shareable themselves) before the
+ * store.
  *
  * The memo is a hidden frozen Array, immutable after publication:
  *
- *   [ractor_id, base_cref, copied_iseq, cref, mod1, mod2, ...]
+ *   [base_cref, copied_iseq, cref, mod1, mod2, ...]
  *
  * Both paths are lock-free: lookup acquire-loads the memo, and store
  * publishes a fully-populated frozen Array with a single release store
@@ -272,20 +272,11 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * readers finish, the next GC reclaims it. */
 
 enum iseq_refinement_memo_index {
-    REFINEMENT_MEMO_RACTOR_ID,   /* key: Fixnum id of the creating Ractor */
     REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */
     REFINEMENT_MEMO_COPIED_ISEQ, /* value: copied iseq with independent caches */
     REFINEMENT_MEMO_CREF,        /* value: cref with refinements activated */
     REFINEMENT_MEMO_MODS         /* key: modules, in argument order */
 };
-
-/* The current Ractor's id as a Fixnum.  LONG2FIX never allocates, keeping
- * the lookup path allocation-free. */
-static VALUE
-iseq_refinement_memo_ractor_key(void)
-{
-    return LONG2FIX((long)rb_ractor_id(GET_RACTOR()));
-}
 
 static bool
 iseq_refinement_memo_key_match(VALUE memo, VALUE base_cref,
@@ -311,15 +302,6 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
         &ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
     if (memo) {
         const VALUE *p = RARRAY_CONST_PTR(memo);
-        if (p[REFINEMENT_MEMO_RACTOR_ID] != iseq_refinement_memo_ractor_key()) {
-            /* The memo belongs to another Ractor; its cref references that
-             * Ractor's non-shareable state, so it must not be reused here. */
-            rb_category_warn(
-                RB_WARN_CATEGORY_PERFORMANCE,
-                "Proc#refined called on the same block from multiple Ractors disables memoization"
-            );
-            return false;
-        }
         if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
             *iseq_out = (const rb_iseq_t *)p[REFINEMENT_MEMO_COPIED_ISEQ];
             *cref_out = (const rb_cref_t *)p[REFINEMENT_MEMO_CREF];
@@ -343,7 +325,6 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
                               const rb_iseq_t *copied_iseq, const rb_cref_t *cref)
 {
     VALUE memo = rb_ary_hidden_new(REFINEMENT_MEMO_MODS + argc);
-    rb_ary_push(memo, iseq_refinement_memo_ractor_key());
     rb_ary_push(memo, base_cref);
     rb_ary_push(memo, (VALUE)copied_iseq);
     rb_ary_push(memo, (VALUE)cref);

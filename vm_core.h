@@ -557,11 +557,10 @@ struct rb_iseq_constant_body {
      *     __builtin.mandatory_only? optimization).
      *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry Proc#refined
      *     memo, a hidden frozen Array caching the most recent {copied iseq,
-     *     cref} pair for a (ractor, base_cref, modules) key (see iseq.c for
-     *     the layout).  0 unless this block iseq has been a Proc#refined
-     *     source.  Accessed lock-free with acquire/release semantics; the
-     *     Array is immutable after publication, and old memos are reclaimed
-     *     by GC.
+     *     cref} pair for a (base_cref, modules) key (see iseq.c for the
+     *     layout).  0 unless this block iseq has been a Proc#refined source.
+     *     Accessed lock-free with acquire/release semantics; the Array is
+     *     immutable after publication, and old memos are reclaimed by GC.
      * A block iseq never has a mandatory-only variant and only block iseqs are
      * Proc#refined sources, so discriminate with
      * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK.
