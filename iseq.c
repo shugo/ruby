@@ -252,12 +252,14 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * refinement set, so their inline caches resolve identically.
  *
  * The memo is a GC-managed imemo (imemo_refinement_memo), immutable after
- * publication.  The read path (lookup) is lock-free using acquire semantics;
- * the write path (store) runs under RB_VM_LOCKING().  When a new memo replaces
- * the old one, the old imemo is no longer referenced by the iseq but stays
- * alive as long as any lock-free reader holds its VALUE on the C stack
- * (conservative GC pins it).  Once all readers finish, the next GC reclaims
- * it. */
+ * publication.  Both paths are lock-free: lookup acquire-loads the memo
+ * pointer, and store publishes a fully-initialized imemo with a single
+ * release store, so it needs no lock either (concurrent stores are safe;
+ * the last writer wins and the losers' memos become garbage).  When a new
+ * memo replaces the old one, the old imemo is no longer referenced by the
+ * iseq but stays alive as long as any lock-free reader holds its VALUE on
+ * the C stack (conservative GC pins it).  Once all readers finish, the next
+ * GC reclaims it. */
 
 static bool
 iseq_refinement_memo_key_match(const struct rb_iseq_refinement_memo *memo,
@@ -302,8 +304,10 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
     return false;
 }
 
-/* Allocate a new immutable imemo memo and publish it with release semantics.
- * Must be called under RB_VM_LOCKING(). */
+/* Allocate a new immutable imemo memo and publish it with a release store.
+ * Needs no lock: the single atomic pointer store is the only shared-state
+ * mutation, so concurrent stores just overwrite each other (last writer
+ * wins) and the losing memos are reclaimed by GC. */
 void
 rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
                               long argc, const VALUE *mods,
