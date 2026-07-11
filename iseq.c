@@ -298,6 +298,7 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
                                const rb_iseq_t **iseq_out, const rb_cref_t **cref_out)
 {
+    VM_ASSERT(ISEQ_BODY(src_iseq)->type == ISEQ_TYPE_BLOCK);
     VALUE memo = rbimpl_atomic_value_load(
         &ISEQ_BODY(src_iseq)->opt.refinement_memo, RBIMPL_ATOMIC_ACQUIRE);
     if (memo) {

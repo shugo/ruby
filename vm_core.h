@@ -599,6 +599,24 @@ struct rb_iseq_constant_body {
 #endif
 };
 
+/* Type-checked readers for rb_iseq_constant_body::opt: assert the iseq type
+ * so a reader can never see the other union member's value.  Writers and
+ * sites that need the member's address (GC marking, atomics, IBF load) keep
+ * accessing the union directly with their own type checks. */
+static inline const rb_iseq_t *
+rb_iseq_body_mandatory_only_iseq(const struct rb_iseq_constant_body *body)
+{
+    VM_ASSERT(body->type == ISEQ_TYPE_METHOD);
+    return body->opt.mandatory_only_iseq;
+}
+
+static inline VALUE
+rb_iseq_body_refinement_memo(const struct rb_iseq_constant_body *body)
+{
+    VM_ASSERT(body->type == ISEQ_TYPE_BLOCK);
+    return body->opt.refinement_memo;
+}
+
 /* T_IMEMO/iseq */
 /* typedef rb_iseq_t is in method.h */
 struct rb_iseq_struct {

@@ -13742,7 +13742,7 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     /* For block iseqs this slot holds the (transient, non-serialized)
      * Proc#refined memo rather than a mandatory_only_iseq, so dump
      * it as absent. */
-    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : ISEQ_BODY(iseq)->opt.mandatory_only_iseq);
+    const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK ? NULL : rb_iseq_body_mandatory_only_iseq(ISEQ_BODY(iseq)));
     const ibf_offset_t ci_entries_offset =  ibf_dump_ci_entries(dump, iseq);
     const ibf_offset_t outer_variables_offset = ibf_dump_outer_variables(dump, iseq);
 
