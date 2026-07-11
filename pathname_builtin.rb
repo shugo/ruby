@@ -2132,13 +2132,73 @@ class Pathname    # * FileTest *
   # See <tt>FileTest.setuid?</tt>.
   def setuid?() FileTest.setuid?(@path) end
 
-  # See <tt>FileTest.setgid?</tt>.
+  # :markup: markdown
+  #
+  # call-seq:
+  #   setgid? -> true or false
+  #
+  # Returns whether the [setgid bit](https://en.wikipedia.org/wiki/Setuid) is set
+  # in the permissions for the entry at the path in `self`:
+  #
+  # ```ruby
+  # # Create a file and get its permissions and setgid? setting.
+  # pn = Pathname('doc/t.tmp')
+  # pn.write('foo')
+  # mode = pn.stat.mode.to_s(8) # => "100664"
+  # pn.setgid?                  # => false
+  # # Set the bit.
+  # pn.chmod(0o2644)
+  # mode = pn.stat.mode.to_s(8) # => "102644"
+  # pn.setgid?                  # => true
+  # pn.delete                   # Clean up.
+  # ```
+  #
+  # On Windows, the bit is never set; the method always returns `false`.
   def setgid?() FileTest.setgid?(@path) end
 
-  # See <tt>FileTest.size</tt>.
+  # :markup: markdown
+  #
+  # call-seq:
+  #   size -> integer
+  #
+  # Returns the size of the entry at the path in `self`:
+  #
+  # ```ruby
+  # Pathname('README.md').size # => 3469
+  # Pathname('doc').size       # => 4096
+  # pn = Pathname('doc/t.tmp')
+  # pn.write('')
+  # pn.size                    # => 0
+  # pd.delete                  # Clean up.
+  # ```
+  #
+  # Raises an exception if the entry does not exist.
+  #
   def size() FileTest.size(@path) end
 
-  # See <tt>FileTest.size?</tt>.
+  # :markup: markdown
+  #
+  # call-seq:
+  #   size? -> integer or nil
+  #
+  # If the file or directory entry at the path in `self` exists,
+  # returns its size if non-zero, or `nil` if zero:
+  #
+  # ```ruby
+  # pn = Pathname('doc/t.tmp')
+  # pn.write('foo')
+  # pn.size? # => 3
+  # pn.write('')
+  # pn.size? # => nil
+  # ```
+  #
+  # Returns `nil` if the entry does not exist:
+  #
+  # ```ruby
+  # pn.delete
+  # pn.size? # => nil
+  # ```
+  #
   def size?() FileTest.size?(@path) end
   # See <tt>FileTest.sticky?</tt>.
   def sticky?() FileTest.sticky?(@path) end
@@ -2296,7 +2356,23 @@ class Pathname
   # Argument `permissions` is ignored on Windows.
   def mkdir(...) Dir.mkdir(@path, ...) end
 
-  # See <tt>Dir.rmdir</tt>.  Remove the referenced directory.
+  # :markup: markdown
+  #
+  # call-seq:
+  #   rmdir -> 0
+  #
+  # Deletes the directory at the path in +self+; returns `0`:
+  #
+  # ```ruby
+  # pn = Pathname('doc/foo')
+  # pn.mkdir
+  # pn.rmdir
+  # ```
+  #
+  # Raises an exception if the directory is not empty,
+  # or if the path does not point to a directory.
+  #
+  # Use method #rmtree to delete the entire filetree at the path.
   def rmdir() Dir.rmdir(@path) end
 
   # :markup: markdown
