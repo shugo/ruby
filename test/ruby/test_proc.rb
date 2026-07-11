@@ -628,6 +628,31 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
+  def test_refined_coverage
+    assert_separately(%w[-rcoverage -rtempfile], <<~'RUBY')
+      f = Tempfile.open(["refined_coverage", ".rb"])
+      f.write(<<~'FIXTURE')
+        module RefinedCoverageExt
+          refine String do
+            def shout = upcase + "!"
+          end
+        end
+        REFINED_COVERAGE_PROC = ->(s) {
+          a = s.length
+          s.shout * a
+        }
+      FIXTURE
+      f.close
+      Coverage.start(lines: true)
+      load f.path
+      refined = REFINED_COVERAGE_PROC.refined(RefinedCoverageExt)
+      assert_equal("HI!HI!", refined.call("hi"))
+      lines = Coverage.result[f.path][:lines]
+      assert_equal(1, lines[6], "line 7 (a = s.length) must be counted when run through the refined copy")
+      assert_equal(1, lines[7], "line 8 (s.shout * a) must be counted when run through the refined copy")
+    RUBY
+  end
+
   def test_refined_chain_rejected
     # Chaining would need merge-or-replace semantics for the refinement sets;
     # both are confusing, so a refined proc rejects further refined.

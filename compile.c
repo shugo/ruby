@@ -15190,8 +15190,9 @@ ibf_dump_iseq_table_collect_i(st_data_t key, st_data_t val, st_data_t arg)
  * IBF serializer in an in-memory round-trip.  IBF is updated whenever the body
  * layout changes, and its load path already produces exactly the fresh state we
  * need: zeroed is_entries (so once/IC caches start cold), empty call caches,
- * NULL JIT payloads, coverage/original_iseq cleared, and threaded-code +
- * trace instrumentation reapplied.
+ * NULL JIT payloads, original_iseq cleared, and threaded-code + trace
+ * instrumentation reapplied.  Coverage is re-shared from the source after
+ * load (see below); everything else starts fresh.
  *
  * "subtree mode" lets us start a dump from a nested block iseq (normally IBF
  * starts from a top-level iseq, so all parent/local references are within the
@@ -15256,6 +15257,16 @@ rb_iseq_dup_with_independent_caches(const rb_iseq_t *src_root)
         RB_OBJ_WRITE(copy, &cb->location.pathobj, sb->location.pathobj);
         if (sb->variable.script_lines != Qnil) {
             RB_OBJ_WRITE(copy, &cb->variable.script_lines, sb->variable.script_lines);
+        }
+        /* Share the source's coverage arrays: the copy executes the same code
+         * locations, so its hits must count against the same file and lines.
+         * IBF load cleared coverage on the copy, which would silently exclude
+         * execution through the copy from Coverage results. */
+        if (RTEST(ISEQ_COVERAGE(src))) {
+            ISEQ_COVERAGE_SET(copy, ISEQ_COVERAGE(src));
+            if (ISEQ_PC2BRANCHINDEX(src) != Qnil) {
+                ISEQ_PC2BRANCHINDEX_SET(copy, ISEQ_PC2BRANCHINDEX(src));
+            }
         }
 
         if (i == 0) result = copy;
