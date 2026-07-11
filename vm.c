@@ -382,12 +382,14 @@ rb_vm_cref_dup(const rb_cref_t *cref)
 
 /* Proc#refined: shallow-duplicate a memoized refinement cref for one proc.
  * Unlike rb_vm_cref_dup, the (frozen, shareable) refinements table is shared
- * rather than copied; CREF_OMOD_SHARED makes any later mutation path
- * (rb_using_refinement) copy the table before writing into this cref.  Each
- * refined proc gets its own top cref so in-place cref mutations from the
- * proc body -- `using` through rb_vm_cref(), scope visibility -- stay
- * per-proc and never modify the published memo cref, which other procs
- * (and other Ractors, via the memo) share. */
+ * rather than copied.  Each refined proc gets its own top cref so in-place
+ * cref mutations from the proc body -- scope visibility -- stay per-proc and
+ * never modify the published memo cref, which other procs (and other Ractors,
+ * via the memo) share.  The refinements table itself stays immutable: `using`
+ * inside the body is rejected (CREF_REFINED_PROC).  CREF_OMOD_SHARED is a
+ * defensive guard so that if a writer ever reaches this cref -- today only the
+ * unguarded rb_vm_using_module() C API, via rb_using_refinement -- it copies
+ * the frozen table before writing rather than mutating the shared Hash. */
 rb_cref_t *
 rb_vm_cref_dup_with_shared_refinements(const rb_cref_t *cref)
 {
