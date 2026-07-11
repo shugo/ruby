@@ -2233,15 +2233,15 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
             new_block_handler = VM_BH_FROM_IFUNC_BLOCK(&new_captured);
             break;
           case block_handler_type_proc:
-            is_lambda = rb_proc_lambda_p(block_handler) != Qfalse;
             {
                 VALUE procval = VM_BH_TO_PROC(block_handler);
                 rb_proc_t *po;
                 GetProcPtr(procval, po);
+                is_lambda = po->is_lambda;
                 /* Proc#refined refinement cref, if any */
                 if (po->is_refined) proc_cref = rb_proc_refinements_cref(procval);
+                block_handler = vm_block_to_block_handler(&po->block);
             }
-            block_handler = vm_proc_to_block_handler(VM_BH_TO_PROC(block_handler));
             goto again;
           case block_handler_type_symbol:
             return rb_sym_proc_call(SYM2ID(VM_BH_TO_SYMBOL(block_handler)),
