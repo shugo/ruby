@@ -1481,6 +1481,32 @@ iterator_block_expired(RB_BLOCK_CALL_FUNC_ARGLIST(yielded_arg, callback_arg))
     UNREACHABLE_RETURN(Qnil);
 }
 
+#if RUBY_DEBUG
+static bool
+iterator_data_looks_like_stack_pointer(const rb_execution_context_t *ec, const void *data)
+{
+    if (RB_SPECIAL_CONST_P((VALUE)data)) return false;
+
+    int here_var;
+    const uintptr_t here  = (uintptr_t)asan_get_real_stack_addr(&here_var);
+    const uintptr_t start = (uintptr_t)ec->machine.stack_start;
+    const uintptr_t p     = (uintptr_t)data;
+    const uintptr_t lo    = start < here ? start : here;
+    const uintptr_t hi    = start < here ? here : start;
+
+    if (lo <= p && p <= hi) return true;
+
+    void *fake_beg, *fake_end;
+    if (asan_get_fake_stack_extents(asan_get_thread_fake_stack_handle(),
+                                    (VALUE)data,
+                                    ec->machine.stack_start, (void *)here,
+                                    &fake_beg, &fake_end)) {
+        return true;
+    }
+    return false;
+}
+#endif
+
 static VALUE
 rb_iterate0(VALUE (* it_proc) (VALUE), VALUE data1,
             struct vm_ifunc *const ifunc, bool block_noescape,
@@ -1490,6 +1516,14 @@ rb_iterate0(VALUE (* it_proc) (VALUE), VALUE data1,
     volatile VALUE retval = Qnil;
     rb_control_frame_t *volatile const cfp = ec->cfp;
     struct vm_ifunc *volatile const invalidate_ifunc = block_noescape ? ifunc : NULL;
+
+#if RUBY_DEBUG
+    if (!block_noescape && ifunc &&
+        iterator_data_looks_like_stack_pointer(ec, ifunc->data)) {
+        rb_bug("rb_block_call() was passed a pointer to C stack data as data2; "
+               "use rb_block_call_noescape() instead");
+    }
+#endif
 
     EC_PUSH_TAG(ec);
     state = EC_EXEC_TAG();
