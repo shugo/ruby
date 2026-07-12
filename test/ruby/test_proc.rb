@@ -821,6 +821,18 @@ class TestProc < Test::Unit::TestCase
     assert_equal("HI!", orig.refined(RefinementsModule).call("hi"))
   end
 
+  def test_refined_ruby2_keywords_memo
+    # Proc#ruby2_keywords marks the shared block iseq, possibly after a copy
+    # was memoized; a refined proc built from that memoized copy must still
+    # delegate keywords like its source does.
+    target = ->(a, k: nil) { [a, k] }
+    pr = proc { |*args| target.call(*args) }
+    pr.refined(RefinementsModule) # memoize a copy before the mark
+    pr.ruby2_keywords
+    assert_equal([1, 2], pr.call(1, k: 2))
+    assert_equal([1, 2], pr.refined(RefinementsModule).call(1, k: 2))
+  end
+
   def test_refined_memo_distinct_environments
     # Procs sharing the same block iseq but capturing different closure
     # environments hit the same memo entry (env is not part of the key), yet each

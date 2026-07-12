@@ -479,6 +479,15 @@ proc_refined(int argc, VALUE *argv, VALUE self)
         rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
+    /* Proc#ruby2_keywords marks the source iseq, possibly after a memoized
+     * copy was made, so a memo hit could hand out a copy whose flag is stale.
+     * Re-sync it here.  The flag is set-only, so writing it into the shared
+     * copy is idempotent and monotonic, and matches how plain procs created
+     * from the same block literal already share the mark via their iseq. */
+    if (ISEQ_BODY(src_iseq)->param.flags.ruby2_keywords) {
+        ISEQ_BODY((rb_iseq_t *)new_iseq)->param.flags.ruby2_keywords = 1;
+    }
+
     /* The memoized cref is a shared template that must stay immutable: other
      * procs (and other Ractors, via the memo) use it too.  Hand this proc a
      * shallow per-proc copy sharing the frozen refinements table, so in-place
