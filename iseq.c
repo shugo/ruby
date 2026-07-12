@@ -300,7 +300,16 @@ iseq_refinement_memo_key_match(VALUE memo, VALUE base_cref,
 }
 
 /* Lock-free lookup: acquire-load the memo, read immutable elements.
- * On a key hit, fill *iseq_out / *cref_out and return true; otherwise false. */
+ * On a key hit, fill *iseq_out / *cref_out and return true; otherwise false.
+ *
+ * Beside the key, the memo is only valid while the copy still matches the
+ * source's ruby2_keywords flag: Proc#ruby2_keywords may mark the source
+ * after the copy was memoized.  A mismatch is treated as a miss (the copy
+ * is rebuilt with the current flag) rather than writing the flag into the
+ * memoized copy: the shared copy stays immutable, so procs built before
+ * the mark keep their creation-time behavior, just as Proc#refined
+ * snapshots the refinement set at creation.  The flag is set-only, so
+ * this costs at most one extra rebuild per block. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
@@ -312,9 +321,18 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
     if (memo) {
         const VALUE *p = RARRAY_CONST_PTR(memo);
         if (iseq_refinement_memo_key_match(memo, base_cref, argc, mods)) {
-            *iseq_out = (const rb_iseq_t *)p[REFINEMENT_MEMO_COPIED_ISEQ];
-            *cref_out = (const rb_cref_t *)p[REFINEMENT_MEMO_CREF];
-            return true;
+            const rb_iseq_t *copied_iseq = (const rb_iseq_t *)p[REFINEMENT_MEMO_COPIED_ISEQ];
+            if (ISEQ_BODY(copied_iseq)->param.flags.ruby2_keywords ==
+                ISEQ_BODY(src_iseq)->param.flags.ruby2_keywords) {
+                *iseq_out = copied_iseq;
+                *cref_out = (const rb_cref_t *)p[REFINEMENT_MEMO_CREF];
+                return true;
+            }
+            rb_category_warn(
+                RB_WARN_CATEGORY_PERFORMANCE,
+                "Proc#refined re-copies the block because the ruby2_keywords flag changed after the copy was memoized"
+            );
+            return false;
         }
         rb_category_warn(
             RB_WARN_CATEGORY_PERFORMANCE,

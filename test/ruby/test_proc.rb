@@ -823,14 +823,29 @@ class TestProc < Test::Unit::TestCase
 
   def test_refined_ruby2_keywords_memo
     # Proc#ruby2_keywords marks the shared block iseq, possibly after a copy
-    # was memoized; a refined proc built from that memoized copy must still
-    # delegate keywords like its source does.
-    target = ->(a, k: nil) { [a, k] }
-    pr = proc { |*args| target.call(*args) }
-    pr.refined(RefinementsModule) # memoize a copy before the mark
-    pr.ruby2_keywords
-    assert_equal([1, 2], pr.call(1, k: 2))
-    assert_equal([1, 2], pr.refined(RefinementsModule).call(1, k: 2))
+    # was memoized.  The stale memo is rebuilt (with a warning naming the
+    # cause) rather than reused or mutated: the new proc delegates keywords
+    # like its source, while procs built before the mark keep their
+    # creation-time behavior.
+    assert_separately([], <<~'RUBY')
+      module M; refine(String) { def shout = upcase + "!" }; end
+      Warning[:performance] = true
+      $warned = []
+      def Warning.warn(msg, category: nil) = $warned << msg
+      target = ->(a, k: nil) { [a, k] }
+      pr = proc { |*args| target.call(*args) }
+      q1 = pr.refined(M) # memoize a copy before the mark
+      pr.ruby2_keywords
+      assert_equal([1, 2], pr.call(1, k: 2))
+      q2 = pr.refined(M)
+      assert_equal([1, 2], q2.call(1, k: 2))
+      assert_equal(1, $warned.grep(/ruby2_keywords/).size)
+      # the copy made before the mark is not retroactively changed
+      assert_raise(ArgumentError) { q1.call(1, k: 2) }
+      # the rebuilt memo is hit from now on; no further warnings
+      assert_equal([1, 2], pr.refined(M).call(1, k: 2))
+      assert_equal(1, $warned.grep(/ruby2_keywords/).size)
+    RUBY
   end
 
   def test_refined_memo_distinct_environments
