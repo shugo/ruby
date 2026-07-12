@@ -268,8 +268,7 @@ block_mark_and_move(struct rb_block *block)
     }
 }
 
-/* Hidden (Ruby-invisible) instance-variable id holding a refinement proc's
- * cref; see Proc#refined. */
+/* hidden ivar holding a refined proc's cref; see Proc#refined */
 static ID id_refinements_cref;
 
 static void
@@ -421,18 +420,14 @@ proc_refined(int argc, VALUE *argv, VALUE self)
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
 
-    /* Only Procs created from a Ruby block are supported.  A Proc created from a
-     * method has an iseq but is invoked through the bmethod path, which resolves
-     * methods against the method entry rather than the proc's cref, so the
-     * refinements would silently not take effect; reject it too. */
+    /* A Proc created from a method has an iseq but is invoked through the
+     * bmethod path, which never reads the proc's cref; reject it too. */
     if (vm_block_type(&src->block) != block_type_iseq || src->is_from_method) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc without a Ruby block");
     }
 
-    /* Chaining is not allowed: combining refinement sets raises ordering and
-     * precedence questions that are better avoided (pass all modules in one
-     * call instead).  Rejecting now also keeps the option open to give chaining
-     * a meaning later without breaking compatibility. */
+    /* Reject chaining for now; it can be given a meaning later without
+     * breaking compatibility. */
     if (src->is_refined) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc that already has refinements");
     }
@@ -446,29 +441,20 @@ proc_refined(int argc, VALUE *argv, VALUE self)
 
     const rb_iseq_t *new_iseq;
     const rb_cref_t *new_cref;
-    /* Lock-free memo lookup (acquire load, no allocation, no lock needed on hit). */
     if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
-        /* IBF round-trip is expensive; do it outside the lock. */
+        /* the expensive IBF round-trip stays outside the lock */
         new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
         rb_cref_t *cref = rb_vm_cref_dup((const rb_cref_t *)base_cref);
-        /* rb_using_module_recursive modifies shared subclass lists via
-         * rb_class_subclass_add, so it must run under the VM lock.  cref
-         * duplication and the memo store touch only local/atomic state, so
-         * they stay outside the lock to keep the critical section minimal. */
+        /* rb_using_module_recursive modifies shared subclass lists */
         RB_VM_LOCKING() {
             for (int i = 0; i < argc; i++) {
                 rb_using_module_recursive(cref, argv[i]);
             }
         }
-        /* Make the refinements table shareable so the memoized cref can be
-         * reused from any Ractor: the cref imemo itself is always allocated
-         * shareable (vm_cref_new0), and its refinements Hash is the only
-         * Ractor-local part.  The table is meant to stay immutable: `using`
-         * inside the body is rejected (CREF_REFINED_PROC), and no code path
-         * writes to an existing cref's refinements otherwise.  CREF_OMOD_SHARED
-         * is defense in depth: any path that ever hands this cref to
-         * rb_using_refinement copies the frozen Hash before writing rather
-         * than mutate it (and the shared memo) in place. */
+        /* Freeze the refinements table and mark it shareable so the memoized
+         * cref can be reused from any Ractor.  CREF_OMOD_SHARED makes any
+         * path that hands this cref to rb_using_refinement copy the table
+         * before writing. */
         VALUE refs = CREF_REFINEMENTS(cref);
         if (!NIL_P(refs)) {
             OBJ_FREEZE(refs);
@@ -479,13 +465,12 @@ proc_refined(int argc, VALUE *argv, VALUE self)
         rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
-    /* The memoized cref is a shared template that must stay immutable: other
-     * procs (and other Ractors, via the memo) use it too.  Hand this proc a
-     * shallow per-proc copy sharing the frozen refinements table, so in-place
-     * cref mutations from the body (scope visibility) land on this proc's own
-     * cref only.  The REFINED_PROC flag makes `using` inside the body raise:
-     * it would diverge this proc's refinement set from its siblings', which
-     * share the copied iseq's refined call caches. */
+    /* The memoized cref is an immutable template shared with other procs
+     * (and other Ractors); hand this proc a shallow copy so cref mutations
+     * from the body (scope visibility) stay per-proc.  CREF_REFINED_PROC
+     * makes `using` inside the body raise, which would otherwise diverge
+     * the refinement set from the siblings sharing the copied iseq's call
+     * caches. */
     rb_cref_t *proc_cref = rb_vm_cref_dup_with_shared_refinements(new_cref);
     CREF_REFINED_PROC_SET(proc_cref);
     return rb_proc_dup_with_iseq_and_cref(self, new_iseq, proc_cref);
@@ -2860,11 +2845,8 @@ rb_mod_define_method_with_visibility(int argc, VALUE *argv, VALUE mod, const str
     else {
         rb_proc_t *body_proc;
         GetProcPtr(body, body_proc);
-        /* A Proc#refined proc resolves methods against the refinement
-         * cref carried on the proc object, but a bmethod is invoked against its
-         * method entry and never reads that cref, so the refinements would
-         * silently not take effect.  Reject it rather than define a method whose
-         * refinements are dropped. */
+        /* A bmethod never reads the refinement cref carried on the proc;
+         * reject rather than silently drop the refinements. */
         if (body_proc->is_refined) {
             rb_raise(rb_eArgError,
                      "can't define a method from a Proc with refinements");

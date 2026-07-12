@@ -234,50 +234,25 @@ rb_iseq_free(const rb_iseq_t *iseq)
 
         compile_data_free(ISEQ_COMPILE_DATA(iseq));
         if (body->outer_variables) rb_id_table_free(body->outer_variables);
-        /* refinement_memo is a GC-managed Array; no manual free needed. */
         SIZED_FREE(body);
     }
 
     RUBY_FREE_LEAVE("iseq");
 }
 
-/* --- Proc#refined: single-entry per-iseq memo ---
- *
- * Copying an iseq (rb_iseq_dup_with_independent_caches in compile.c) is
- * expensive, so the most recent {copied iseq, cref} pair produced from a
- * given source iseq is memoized on the source iseq's body, keyed by
- * (base_cref, modules).  Repeatedly calling Proc#refined on the same proc
- * with the same modules then reuses the copy instead of rebuilding it.
- * Sharing a copy is safe because all results for one key run under the
- * same refinement set, so their inline caches resolve identically.
- *
- * A block iseq is reachable from multiple Ractors (through a shareable
- * proc, or simply because the same block literal runs in several Ractors),
- * so a lookup may return a memo stored by another Ractor.  That is safe
- * because everything in the memo is shareable: crefs always are, iseqs
- * always are, and proc_refined freezes the cref's refinements Hash (whose
- * contents are classes and iclasses, shareable themselves) before the
- * store.  The stored cref is an immutable template: proc_refined hands each
- * proc a shallow per-proc copy (rb_vm_cref_dup_with_shared_refinements), so
- * the template itself never appears in a frame and is never mutated.
- *
- * The memo is a hidden frozen Array, immutable after publication:
+/* Proc#refined memoizes the most recent {copied iseq, cref} pair on the
+ * source iseq's body, since rb_iseq_dup_with_independent_caches is
+ * expensive.  The memo is a hidden frozen Array, immutable after
+ * publication:
  *
  *   [base_cref, copied_iseq, cref, mod1, mod2, ...]
  *
- * Both paths are lock-free: lookup acquire-loads the memo, and store
- * publishes a fully-populated frozen Array with a single release store
- * (concurrent stores are safe; the last writer wins and the losers' memos
- * become garbage).  When a new memo replaces the old one, the old Array is
- * no longer referenced by the iseq but stays alive as long as any lock-free
- * reader holds it on the C stack (conservative GC pins it).  Once all
- * readers finish, the next GC reclaims it.
- *
- * The surviving memo is deliberately retained for the lifetime of the
- * source iseq, even after every Proc derived from it is gone: it is a
- * single bounded entry per source iseq, and dropping it earlier would only
- * trade memory (one copied block subtree and its cref) for a rebuild on
- * the next Proc#refined call. */
+ * keyed by (base_cref, modules).  Lookup and store are lock-free: lookup
+ * acquire-loads the memo, store publishes a fully-populated Array with a
+ * release store (last writer wins; replaced memos are reclaimed by GC).
+ * Everything in the memo is shareable (proc_refined freezes the cref's
+ * refinements Hash), so a memo stored by one Ractor may be reused by
+ * another.  The memo is retained for the lifetime of the source iseq. */
 
 enum iseq_refinement_memo_index {
     REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */
@@ -299,17 +274,10 @@ iseq_refinement_memo_key_match(VALUE memo, VALUE base_cref,
     return true;
 }
 
-/* Lock-free lookup: acquire-load the memo, read immutable elements.
- * On a key hit, fill *iseq_out / *cref_out and return true; otherwise false.
- *
- * Beside the key, the memo is only valid while the copy still matches the
- * source's ruby2_keywords flag: Proc#ruby2_keywords may mark the source
- * after the copy was memoized.  A mismatch is treated as a miss (the copy
- * is rebuilt with the current flag) rather than writing the flag into the
- * memoized copy: the shared copy stays immutable, so procs built before
- * the mark keep their creation-time behavior, just as Proc#refined
- * snapshots the refinement set at creation.  The flag is set-only, so
- * this costs at most one extra rebuild per block. */
+/* On a key hit, fill *iseq_out / *cref_out and return true.  A memo whose
+ * copy no longer matches the source's ruby2_keywords flag (the source may
+ * be marked after memoization) is a miss: the copy is rebuilt rather than
+ * mutated, so procs built before the mark keep their behavior. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
@@ -342,10 +310,6 @@ rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
     return false;
 }
 
-/* Build a new memo Array and publish it with a release store.  Needs no
- * lock: the single atomic store is the only shared-state mutation, so
- * concurrent stores just overwrite each other (last writer wins) and the
- * losing memos are reclaimed by GC. */
 void
 rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
                               long argc, const VALUE *mods,
@@ -359,8 +323,7 @@ rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
         rb_ary_push(memo, mods[i]);
     }
     OBJ_FREEZE(memo);
-    /* The source iseq is shareable; the GC shareability verifier requires
-     * every child of a shareable object to be shareable too. */
+    /* every child of a shareable object must be shareable */
     RB_OBJ_SET_SHAREABLE(memo);
 
     struct rb_iseq_constant_body *body = ISEQ_BODY(src_iseq);
@@ -511,8 +474,7 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
         if (body->local_iseq) rb_gc_mark_and_move_ptr(&body->local_iseq);
         if (body->parent_iseq) rb_gc_mark_and_move_ptr(&body->parent_iseq);
 
-        /* mandatory_only_iseq and refinement_memo share a slot (see vm_core.h);
-         * the iseq type selects which one is live. */
+        /* the opt union is discriminated by the iseq type (see vm_core.h) */
         if (body->type == ISEQ_TYPE_BLOCK) {
             if (body->opt.refinement_memo) {
                 rb_gc_mark_and_move(&body->opt.refinement_memo);
@@ -663,8 +625,6 @@ rb_iseq_memsize(const rb_iseq_t *iseq)
         /* body->call_data */
         size += body->ci_size * sizeof(struct rb_call_data);
         // TODO: should we count imemo_callinfo?
-
-        /* refinement_memo is a GC-managed Array; its memsize is reported separately. */
     }
 
     compile_data = ISEQ_COMPILE_DATA(iseq);

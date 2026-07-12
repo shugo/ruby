@@ -1453,11 +1453,8 @@ using_refinement(VALUE klass, VALUE module, VALUE arg)
 
 /*!
  * \private
- * Activate the refinements of \a klass (a module, or an ancestor of one during
- * recursion) in \a cref, without flushing the global refinement method caches.
- * rb_using_module wraps this with the flush, which is needed when \a cref is
- * already associated with live call sites.  Proc#refined uses this
- * directly because it builds a fresh cref that no call site references yet.
+ * rb_using_module without the refinement method cache flush, for a fresh
+ * cref that no call site references yet (Proc#refined).
  */
 void
 rb_using_module_recursive(rb_cref_t *cref, VALUE klass)
@@ -1635,13 +1632,10 @@ ignored_block(VALUE module, const char *klass)
     rb_warn("%s""using doesn't call the given block""%s.", klass, anon);
 }
 
-/* Proc#refined: reject `using` anywhere inside a refined proc's body.  The
- * memoized iseq copy shares refined call caches across every proc derived
- * from the same (source, modules) key, which is only sound while all of them
- * run under the same refinement set; `using` inside the body would diverge
- * the set mid-copy and poison the shared caches.  The flag is set on the
- * proc's own cref; crefs pushed inside the body (class/module bodies,
- * module_eval, eval) chain to it, so walk the chain. */
+/* Reject `using` anywhere inside a refined proc's body: the procs sharing
+ * the memoized iseq copy (and its call caches) must all run under the same
+ * refinement set.  Crefs pushed inside the body chain to the flagged cref,
+ * so walk the chain. */
 static void
 check_not_refined_proc_scope(const char *using_name)
 {

@@ -550,26 +550,14 @@ struct rb_iseq_constant_body {
 
     struct rb_id_table *outer_variables;
 
-    /* Optimization slot shared by mutually-exclusive iseq types, so it adds no
-     * per-iseq size:
-     *   - mandatory_only_iseq: for ISEQ_TYPE_METHOD, the body of the
-     *     mandatory-only optimized variant (set only for methods that use the
-     *     __builtin.mandatory_only? optimization).
-     *   - refinement_memo: for ISEQ_TYPE_BLOCK, the single-entry Proc#refined
-     *     memo, a hidden frozen Array caching the most recent {copied iseq,
-     *     cref} pair for a (base_cref, modules) key (see iseq.c for the
-     *     layout).  0 unless this block iseq has been a Proc#refined source.
-     *     Accessed lock-free with acquire/release semantics; the Array is
-     *     immutable after publication, and old memos are reclaimed by GC.
-     * A block iseq never has a mandatory-only variant and only block iseqs are
-     * Proc#refined sources, so discriminate with
-     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK.
-     *
-     * IBF load only writes opt.mandatory_only_iseq (NULL for block iseqs) and
-     * leaves opt.refinement_memo alone; reading refinement_memo then yields 0
-     * (no memo) because NULL and (VALUE)0 share an all-zero representation on
-     * every supported platform.  A hypothetical platform with a non-zero NULL
-     * representation would require writing the correct member explicitly. */
+    /* Slot shared by mutually-exclusive iseq types, discriminated by
+     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK:
+     *   - mandatory_only_iseq: ISEQ_TYPE_METHOD, the mandatory-only variant
+     *     (__builtin.mandatory_only?).
+     *   - refinement_memo: ISEQ_TYPE_BLOCK, the single-entry Proc#refined
+     *     memo (see iseq.c), accessed lock-free with acquire/release.
+     * IBF load writes only mandatory_only_iseq (NULL for block iseqs),
+     * which reads back through refinement_memo as 0 (no memo). */
     union {
         const rb_iseq_t *mandatory_only_iseq;
         VALUE refinement_memo;
@@ -599,10 +587,7 @@ struct rb_iseq_constant_body {
 #endif
 };
 
-/* Type-checked readers for rb_iseq_constant_body::opt: assert the iseq type
- * so a reader can never see the other union member's value.  Writers and
- * sites that need the member's address (GC marking, atomics, IBF load) keep
- * accessing the union directly with their own type checks. */
+/* type-checked readers for rb_iseq_constant_body::opt */
 static inline const rb_iseq_t *
 rb_iseq_body_mandatory_only_iseq(const struct rb_iseq_constant_body *body)
 {
@@ -1359,17 +1344,11 @@ typedef struct {
     unsigned int is_from_method: 1;	/* bool */
     unsigned int is_lambda: 1;		/* bool */
     unsigned int is_isolated: 1;        /* bool */
-    /* Set when the proc carries a Proc#refined refinement cref.
-     * The cref itself is stored in a hidden instance variable on the proc
-     * object (see proc.c) rather than here, to avoid growing rb_proc_t for the
-     * common case; this bit gates the lookup. */
-    unsigned int is_refined: 1;         /* bool */
+    unsigned int is_refined: 1;         /* bool: Proc#refined */
 } rb_proc_t;
 
-/* Proc#refined: the refinement cref lives in a hidden ivar on the
- * proc object, gated by rb_proc_t::is_refined.  rb_proc_refinements_cref
- * returns NULL unless the bit is set, so callers may use it unguarded;
- * hot paths still pre-check is_refined to skip the call entirely. */
+/* A refined proc's cref lives in a hidden ivar on the proc object;
+ * rb_proc_refinements_cref returns NULL unless is_refined is set. */
 const rb_cref_t *rb_proc_refinements_cref(VALUE procval);
 void rb_proc_set_refinements_cref(VALUE procval, const rb_cref_t *cref);
 

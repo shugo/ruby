@@ -2238,7 +2238,6 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
                 rb_proc_t *po;
                 GetProcPtr(procval, po);
                 is_lambda = po->is_lambda;
-                /* Proc#refined refinement cref, if any */
                 if (po->is_refined) proc_cref = rb_proc_refinements_cref(procval);
                 block_handler = vm_block_to_block_handler(&po->block);
             }
@@ -2258,14 +2257,11 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
     VM_ASSERT(singleton || RB_TYPE_P(self, T_MODULE) || RB_TYPE_P(self, T_CLASS));
     cref = vm_cref_push(ec, self, ep, TRUE, singleton);
 
-    /* Keep the block's refinements active inside instance_eval/instance_exec etc.
-     * when the block came from Proc#refined (its cref is carried on
-     * the proc, not in the captured environment that vm_cref_push reads).
-     * Duplicate the refinements hash rather than sharing it: proc_cref is the
-     * memoized cref shared by every proc derived from this source, so the freshly
-     * pushed cref must not alias (and risk mutating) its hash.  The pushed cref
-     * does not chain to the proc's flagged cref, so propagate the REFINED_PROC
-     * flag explicitly to keep `using` rejected inside the body (see mod_using). */
+    /* A Proc#refined block carries its refinements on the proc, not in the
+     * captured environment that vm_cref_push reads, so copy them onto the
+     * pushed cref (a copy, not an alias: proc_cref is shared).  The pushed
+     * cref does not chain to the proc's cref, so propagate REFINED_PROC
+     * explicitly to keep `using` rejected inside the body. */
     if (proc_cref && !NIL_P(CREF_REFINEMENTS(proc_cref))) {
         CREF_REFINEMENTS_SET(cref, rb_hash_dup(CREF_REFINEMENTS(proc_cref)));
         CREF_REFINED_PROC_SET(cref);

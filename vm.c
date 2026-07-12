@@ -380,16 +380,10 @@ rb_vm_cref_dup(const rb_cref_t *cref)
     return new_cref;
 }
 
-/* Proc#refined: shallow-duplicate a memoized refinement cref for one proc.
- * Unlike rb_vm_cref_dup, the (frozen, shareable) refinements table is shared
- * rather than copied.  Each refined proc gets its own top cref so in-place
- * cref mutations from the proc body -- scope visibility -- stay per-proc and
- * never modify the published memo cref, which other procs (and other Ractors,
- * via the memo) share.  The refinements table itself stays immutable: `using`
- * inside the body is rejected (CREF_REFINED_PROC).  CREF_OMOD_SHARED is
- * defense in depth: any path that ever hands this cref to
- * rb_using_refinement copies the frozen table before writing rather than
- * mutating the shared Hash. */
+/* Shallow-duplicate a memoized Proc#refined cref, sharing its frozen
+ * refinements table instead of copying it.  Each refined proc gets its own
+ * top cref so in-place mutations from the body (scope visibility) never
+ * reach the shared memo cref. */
 rb_cref_t *
 rb_vm_cref_dup_with_shared_refinements(const rb_cref_t *cref)
 {
@@ -1391,12 +1385,8 @@ rb_proc_dup(VALUE self)
     return procval;
 }
 
-/* Build a new Proc that runs `iseq` (a recursive copy of the original block
- * iseq) sharing `self`'s receiver and environment, but carrying `cref` as its
- * refinement cref.  The cref is injected into the frame at every proc-invocation
- * path so refinements take effect while the closure environment stays shared.
- * Used by Proc#refined.  Never marked shareable because the cref
- * may reference non-shareable refinements. */
+/* Proc#refined: build a Proc that runs `iseq` (a copy of self's block iseq)
+ * with `cref` as its refinement cref, sharing self's environment. */
 VALUE
 rb_proc_dup_with_iseq_and_cref(VALUE self, const rb_iseq_t *iseq, const rb_cref_t *cref)
 {
@@ -1897,12 +1887,10 @@ invoke_block_from_c_bh(rb_execution_context_t *ec, VALUE block_handler,
                                     argc, argv, kw_splat, passed_block_handler);
       case block_handler_type_proc:
         {
-            /* Fetch the proc pointer once and reuse it for the refinement cref,
-             * is_lambda, and the block-handler conversion. */
             VALUE procval = VM_BH_TO_PROC(block_handler);
             rb_proc_t *po;
             GetProcPtr(procval, po);
-            if (po->is_refined) cref = rb_proc_refinements_cref(procval); /* into the block frame */
+            if (po->is_refined) cref = rb_proc_refinements_cref(procval);
             if (force_blockarg == FALSE) {
                 is_lambda = po->is_lambda;
             }
@@ -2012,13 +2000,10 @@ static VALUE
 vm_invoke_bmethod(rb_execution_context_t *ec, rb_proc_t *proc, VALUE self,
                      int argc, const VALUE *argv, int kw_splat, VALUE block_handler, const rb_callable_method_entry_t *me)
 {
-    /* bmethod procs are invoked against the method entry, not the proc's cref,
-     * and Proc#refined rejects them, so there is never a cref here. */
+    /* bmethod procs never carry a refinement cref (Proc#refined rejects them) */
     return invoke_block_from_c_proc(ec, proc, self, argc, argv, kw_splat, block_handler, TRUE, NULL, me);
 }
 
-/* `cref` carries a Proc#refined refinement cref (or NULL); callers
- * that have the proc VALUE compute it via rb_proc_refinements_cref. */
 VALUE
 rb_vm_invoke_proc(rb_execution_context_t *ec, rb_proc_t *proc,
                   int argc, const VALUE *argv, int kw_splat, VALUE passed_block_handler,
