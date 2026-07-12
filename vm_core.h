@@ -550,17 +550,9 @@ struct rb_iseq_constant_body {
 
     struct rb_id_table *outer_variables;
 
-    /* Slot shared by mutually-exclusive iseq types, discriminated by
-     * ISEQ_BODY(iseq)->type == ISEQ_TYPE_BLOCK:
-     *   - mandatory_only_iseq: ISEQ_TYPE_METHOD, the mandatory-only variant
-     *     (__builtin.mandatory_only?).
-     *   - refinement_memo: ISEQ_TYPE_BLOCK, the single-entry Proc#refined
-     *     memo (see iseq.c), accessed lock-free with acquire/release.
-     * IBF load writes only mandatory_only_iseq (NULL for block iseqs),
-     * which reads back through refinement_memo as 0 (no memo). */
     union {
-        const rb_iseq_t *mandatory_only_iseq;
-        VALUE refinement_memo;
+        const rb_iseq_t *mandatory_only_iseq; // mandatory-only variant for ISEQ_TYPE_METHOD
+        VALUE refinement_memo;                // single-entry Proc#refined memo for ISEQ_TYPE_BLOCK
     } opt;
 
 #if USE_YJIT || USE_ZJIT

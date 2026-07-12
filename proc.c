@@ -420,14 +420,10 @@ proc_refined(int argc, VALUE *argv, VALUE self)
 
     rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
 
-    /* A Proc created from a method has an iseq but is invoked through the
-     * bmethod path, which never reads the proc's cref; reject it too. */
     if (vm_block_type(&src->block) != block_type_iseq || src->is_from_method) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc without a Ruby block");
     }
 
-    /* Reject chaining for now; it can be given a meaning later without
-     * breaking compatibility. */
     if (src->is_refined) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc that already has refinements");
     }
@@ -442,7 +438,6 @@ proc_refined(int argc, VALUE *argv, VALUE self)
     const rb_iseq_t *new_iseq;
     const rb_cref_t *new_cref;
     if (!rb_iseq_refinement_memo_lookup(src_iseq, base_cref, argc, argv, &new_iseq, &new_cref)) {
-        /* the expensive IBF round-trip stays outside the lock */
         new_iseq = rb_iseq_dup_with_independent_caches(src_iseq);
         rb_cref_t *cref = rb_vm_cref_dup((const rb_cref_t *)base_cref);
         /* rb_using_module_recursive modifies shared subclass lists */
@@ -452,9 +447,7 @@ proc_refined(int argc, VALUE *argv, VALUE self)
             }
         }
         /* Freeze the refinements table and mark it shareable so the memoized
-         * cref can be reused from any Ractor.  CREF_OMOD_SHARED makes any
-         * path that hands this cref to rb_using_refinement copy the table
-         * before writing. */
+         * cref can be reused from any Ractor. */
         VALUE refs = CREF_REFINEMENTS(cref);
         if (!NIL_P(refs)) {
             OBJ_FREEZE(refs);
@@ -467,10 +460,7 @@ proc_refined(int argc, VALUE *argv, VALUE self)
 
     /* The memoized cref is an immutable template shared with other procs
      * (and other Ractors); hand this proc a shallow copy so cref mutations
-     * from the body (scope visibility) stay per-proc.  CREF_REFINED_PROC
-     * makes `using` inside the body raise, which would otherwise diverge
-     * the refinement set from the siblings sharing the copied iseq's call
-     * caches. */
+     * from the body (scope visibility) stay per-proc. */
     rb_cref_t *proc_cref = rb_vm_cref_dup_with_shared_refinements(new_cref);
     CREF_REFINED_PROC_SET(proc_cref);
     return rb_proc_dup_with_iseq_and_cref(self, new_iseq, proc_cref);

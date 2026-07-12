@@ -1634,8 +1634,7 @@ ignored_block(VALUE module, const char *klass)
 
 /* Reject `using` anywhere inside a refined proc's body: the procs sharing
  * the memoized iseq copy (and its call caches) must all run under the same
- * refinement set.  Crefs pushed inside the body chain to the flagged cref,
- * so walk the chain. */
+ * refinement set. */
 static void
 check_not_refined_proc_scope(const char *using_name)
 {

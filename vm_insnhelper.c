@@ -5414,8 +5414,6 @@ vm_proc_to_block_handler(VALUE procval)
     return vm_block_to_block_handler(vm_proc_block(procval));
 }
 
-/* Rare path (Proc#refined), kept out of line so that
- * vm_invoke_proc_block stays leaf/frameless. */
 NOINLINE(static VALUE
 vm_invoke_proc_block_with_cref(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
                                struct rb_calling_info *calling, const struct rb_callinfo *ci,
@@ -5436,9 +5434,6 @@ vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
 {
     VALUE refined_procval = 0;
 
-    /* Only remember which proc carried refinements; the cref is fetched on
-     * the out-of-line rare path so this hot loop stays call-free and the
-     * function stays leaf/frameless. */
     while (vm_block_handler_type(block_handler) == block_handler_type_proc) {
         VALUE procval = VM_BH_TO_PROC(block_handler);
         rb_proc_t *po;
@@ -5449,6 +5444,7 @@ vm_invoke_proc_block(rb_execution_context_t *ec, rb_control_frame_t *reg_cfp,
     }
 
     if (UNLIKELY(refined_procval) && vm_block_handler_type(block_handler) == block_handler_type_iseq) {
+        /* should not be inlined so that vm_invoke_proc_block stays leaf/frameless. */
         return vm_invoke_proc_block_with_cref(ec, reg_cfp, calling, ci, is_lambda, block_handler,
                                               refined_procval);
     }

@@ -190,7 +190,6 @@ rb_ec_tag_jump(const rb_execution_context_t *ec, enum ruby_tag_type st)
 #define CREF_FL_OMOD_SHARED      IMEMO_FL_USER2
 #define CREF_FL_SINGLETON        IMEMO_FL_USER3
 #define CREF_FL_DYNAMIC_CREF IMEMO_FL_USER4
-/* Proc#refined; rejects `using` in the body (see proc.c) */
 #define CREF_FL_REFINED_PROC IMEMO_FL_USER5
 
 static inline int CREF_SINGLETON(const rb_cref_t *cref);

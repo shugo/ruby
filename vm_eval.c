@@ -2257,11 +2257,6 @@ yield_under(VALUE self, int singleton, int argc, const VALUE *argv, int kw_splat
     VM_ASSERT(singleton || RB_TYPE_P(self, T_MODULE) || RB_TYPE_P(self, T_CLASS));
     cref = vm_cref_push(ec, self, ep, TRUE, singleton);
 
-    /* A Proc#refined block carries its refinements on the proc, not in the
-     * captured environment that vm_cref_push reads, so copy them onto the
-     * pushed cref (a copy, not an alias: proc_cref is shared).  The pushed
-     * cref does not chain to the proc's cref, so propagate REFINED_PROC
-     * explicitly to keep `using` rejected inside the body. */
     if (proc_cref && !NIL_P(CREF_REFINEMENTS(proc_cref))) {
         CREF_REFINEMENTS_SET(cref, rb_hash_dup(CREF_REFINEMENTS(proc_cref)));
         CREF_REFINED_PROC_SET(cref);

@@ -474,7 +474,6 @@ rb_iseq_mark_and_move(rb_iseq_t *iseq, bool reference_updating)
         if (body->local_iseq) rb_gc_mark_and_move_ptr(&body->local_iseq);
         if (body->parent_iseq) rb_gc_mark_and_move_ptr(&body->parent_iseq);
 
-        /* the opt union is discriminated by the iseq type (see vm_core.h) */
         if (body->type == ISEQ_TYPE_BLOCK) {
             if (body->opt.refinement_memo) {
                 rb_gc_mark_and_move(&body->opt.refinement_memo);

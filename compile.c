@@ -13733,7 +13733,6 @@ ibf_dump_iseq_each(struct ibf_dump *dump, const rb_iseq_t *iseq)
     const ibf_offset_t catch_table_offset = ibf_dump_catch_table(dump, iseq);
     const int parent_iseq_index =           ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->parent_iseq);
     const int local_iseq_index =            ibf_dump_iseq_subtree_ref(dump, ISEQ_BODY(iseq)->local_iseq);
-    /* for block iseqs the slot holds the non-serialized Proc#refined memo */
     const int mandatory_only_iseq_index =   ibf_dump_iseq(dump, ISEQ_BODY(iseq)->type == ISEQ_TYPE_METHOD ? rb_iseq_body_mandatory_only_iseq(ISEQ_BODY(iseq)) : NULL);
     const ibf_offset_t ci_entries_offset =  ibf_dump_ci_entries(dump, iseq);
     const ibf_offset_t outer_variables_offset = ibf_dump_outer_variables(dump, iseq);
@@ -14037,8 +14036,7 @@ ibf_load_iseq_each(struct ibf_load *load, rb_iseq_t *iseq, ibf_offset_t offset)
 
     RB_OBJ_WRITE(iseq, &load_body->parent_iseq, parent_iseq);
     RB_OBJ_WRITE(iseq, &load_body->local_iseq, local_iseq);
-    /* for block iseqs this writes NULL, which reads back as 0 through
-     * opt.refinement_memo (see vm_core.h) */
+    /* for block iseqs this writes NULL, which reads back as 0 through opt.refinement_memo */
     RB_OBJ_WRITE(iseq, &load_body->opt.mandatory_only_iseq, mandatory_only_iseq);
 
     // This must be done after the local table is loaded.
@@ -15171,16 +15169,7 @@ ibf_dump_iseq_table_collect_i(st_data_t key, st_data_t val, st_data_t arg)
     return ST_CONTINUE;
 }
 
-/* Deep-copy an iseq subtree with independent inline caches for Proc#refined
- * (see proc.c), so refinement method resolution cannot leak into the
- * original Proc.  Implemented as an in-memory IBF round-trip rather than a
- * hand-written field-by-field copy: IBF tracks rb_iseq_constant_body layout
- * changes, and its load path already produces the fresh state needed (cold
- * caches, no JIT payloads, threaded code and trace instrumentation
- * reapplied).  References leaving the subtree are dumped as absent and
- * restored from the source after load.  The binary never leaves the
- * process.  Blocks with an invokebuiltin operand (core .rb sources only)
- * cannot be loaded outside boot and raise. */
+/* Deep-copy an iseq subtree with independent inline caches for Proc#refined */
 const rb_iseq_t *
 rb_iseq_dup_with_independent_caches(const rb_iseq_t *src_root)
 {
