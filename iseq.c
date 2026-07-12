@@ -250,7 +250,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
  * keyed by (base_cref, modules). */
 
 enum iseq_refinement_memo_index {
-    REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */
+    REFINEMENT_MEMO_BASE_CREF,   /* key: cref the modules stack on */
     REFINEMENT_MEMO_COPIED_ISEQ, /* value: copied iseq with independent caches */
     REFINEMENT_MEMO_CREF,        /* value: cref with refinements activated */
     REFINEMENT_MEMO_MODS         /* key: modules, in argument order */

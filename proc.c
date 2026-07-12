@@ -363,11 +363,11 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
 
 /*
  * call-seq:
- *   prc.refined(mod, ...) -> a_proc
+ *   prc.refined(mod, ...) -> a_proc or prc
  *
  * Returns a new Proc that behaves like the receiver but with the refinements
  * activated by the given modules in effect inside its body.  The receiver is
- * left unchanged.
+ * left unchanged.  When called with no modules, returns the receiver itself.
  *
  *   module StringRefinement
  *     refine String do
@@ -383,11 +383,14 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  * Only Procs created from a Ruby block are supported; calling this on a Proc
  * backed by a C function, a Symbol, or a method raises ArgumentError.
  *
- * Calling this method on a Proc that already has refinements applied by this
- * method also raises ArgumentError.  To activate the refinements of multiple
- * modules, pass them all in a single call:
+ * Calls can be chained; the result activates the refinements of all the
+ * modules, applied in order, exactly as if they had been passed in a single
+ * call.  As with +using+, when several modules refine the same method, the
+ * one applied last takes precedence:
  *
- *   refined_proc = original.refined(StringRefinement, OtherRefinement)
+ *   original.refined(StringRefinement).refined(OtherRefinement)
+ *   # behaves like
+ *   original.refined(StringRefinement, OtherRefinement)
  *
  * The refinement set of the returned Proc is fixed when it is created:
  * calling +using+ inside its body raises RuntimeError.
@@ -411,6 +414,8 @@ void rb_iseq_refinement_memo_store(const rb_iseq_t *src_iseq, VALUE base_cref,
  * without affecting the original Proc.  Applying refinements therefore
  * increases memory use roughly in proportion to the size of the block.  The
  * copy is cached and reused for the same receiver and the same modules.
+ * Each step of a chain makes (and caches) its own copy, so passing all
+ * modules in a single call uses less memory than chaining.
  */
 static VALUE
 proc_refined(int argc, VALUE *argv, VALUE self)
@@ -418,22 +423,24 @@ proc_refined(int argc, VALUE *argv, VALUE self)
     rb_proc_t *src;
     GetProcPtr(self, src);
 
-    rb_check_arity(argc, 1, UNLIMITED_ARGUMENTS);
-
     if (vm_block_type(&src->block) != block_type_iseq || src->is_from_method) {
         rb_raise(rb_eArgError, "can't apply refinements to a Proc without a Ruby block");
     }
 
-    if (src->is_refined) {
-        rb_raise(rb_eArgError, "can't apply refinements to a Proc that already has refinements");
-    }
+    if (argc == 0) return self;
 
     for (int i = 0; i < argc; i++) {
         Check_Type(argv[i], T_MODULE);
     }
 
-    VALUE base_cref = (VALUE)rb_vm_get_cref(src->block.as.captured.ep);
     const rb_iseq_t *src_iseq = src->block.as.captured.code.iseq;
+    VALUE base_cref;
+    if (src->is_refined) {
+        base_cref = (VALUE)rb_proc_refinements_cref(self);
+    }
+    else {
+        base_cref = (VALUE)rb_vm_get_cref(src->block.as.captured.ep);
+    }
 
     const rb_iseq_t *new_iseq;
     const rb_cref_t *new_cref;

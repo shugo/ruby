@@ -71,8 +71,13 @@ ruby_version_is "4.1" do
       Class.new.class_eval(&refined).should == "HI!"
     end
 
-    it "raises ArgumentError when called with no modules" do
-      -> { -> {}.refined }.should.raise(ArgumentError)
+    it "returns the receiver itself when called with no modules" do
+      pr = -> {}
+      pr.refined.should equal(pr)
+      refined = -> s { s.shout }.refined(ProcRefinedSpecs::StringShout)
+      refined.refined.should equal(refined)
+      # unsupported Procs are still rejected
+      -> { :upcase.to_proc.refined }.should.raise(ArgumentError)
     end
 
     it "raises TypeError when called with a non-Module argument" do
@@ -86,17 +91,25 @@ ruby_version_is "4.1" do
       -> { method_proc.refined(ProcRefinedSpecs::StringShout) }.should.raise(ArgumentError)
     end
 
-    it "raises ArgumentError for a Proc that already has refinements applied" do
-      refined = -> s { s.shout }.refined(ProcRefinedSpecs::StringShout)
-      -> { refined.refined(ProcRefinedSpecs::StringQuiet) }.should.raise(ArgumentError)
+    it "stacks refinements on an already refined Proc, like a single call with all the modules" do
+      pr = -> s { [s.shout, s.quiet] }
+      chained = pr.refined(ProcRefinedSpecs::StringShout).refined(ProcRefinedSpecs::StringQuiet)
+      chained.call("Hi").should == ["hi", "..."]
+      chained.call("Hi").should == pr.refined(ProcRefinedSpecs::StringShout, ProcRefinedSpecs::StringQuiet).call("Hi")
+    end
+
+    it "gives precedence to the refinements applied last when chaining" do
+      pr = -> s { s.shout }
+      pr.refined(ProcRefinedSpecs::StringShout).refined(ProcRefinedSpecs::StringQuiet).call("Hi").should == "hi"
+      pr.refined(ProcRefinedSpecs::StringQuiet).refined(ProcRefinedSpecs::StringShout).call("Hi").should == "HI!"
     end
 
     it "keeps the refinements on dup and clone" do
       refined = -> s { s.shout }.refined(ProcRefinedSpecs::StringShout)
       refined.dup.call("hi").should == "HI!"
       refined.clone.call("hi").should == "HI!"
-      -> { refined.dup.refined(ProcRefinedSpecs::StringQuiet) }.should.raise(ArgumentError)
-      -> { refined.clone.refined(ProcRefinedSpecs::StringQuiet) }.should.raise(ArgumentError)
+      refined.dup.refined(ProcRefinedSpecs::StringQuiet).call("Hi").should == "hi"
+      refined.clone.refined(ProcRefinedSpecs::StringQuiet).call("Hi").should == "hi"
     end
 
     it "raises ArgumentError when the result is passed to define_method" do

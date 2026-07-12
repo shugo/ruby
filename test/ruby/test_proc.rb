@@ -606,7 +606,6 @@ class TestProc < Test::Unit::TestCase
   end
 
   def test_refined_errors
-    assert_raise(ArgumentError) { ->(s) { s }.refined }
     assert_raise(TypeError) { ->(s) { s }.refined(42) }
     # non-iseq Procs are not supported
     assert_raise(ArgumentError) { :upcase.to_proc.refined(RefinementsModule) }
@@ -672,16 +671,90 @@ class TestProc < Test::Unit::TestCase
     RUBY
   end
 
-  def test_refined_chain_rejected
-    # Chaining would need merge-or-replace semantics for the refinement sets;
-    # both are confusing, so a refined proc rejects further refined.
-    # Multiple modules can be activated by passing them in a single call.
-    refined = ->(s) { s.shout }.refined(RefinementsModule)
-    assert_raise(ArgumentError) { refined.refined(RefinementsModule2) }
-    # the refinement state survives dup, so the dup is rejected too
-    assert_raise(ArgumentError) { refined.dup.refined(RefinementsModule2) }
-    # the receiver remains usable
-    assert_equal("HI!", refined.call("hi"))
+  def test_refined_identity
+    orig = ->(s) { s.shout }
+    assert_same(orig, orig.refined)
+    refined = orig.refined(RefinementsModule)
+    assert_same(refined, refined.refined)
+    # unsupported Procs are rejected even for the empty call
+    assert_raise(ArgumentError) { :upcase.to_proc.refined }
+  end
+
+  def test_refined_chain
+    # chaining stacks the new modules on top of the receiver's refinements
+    orig = ->(s, n) { [s.shout, n.doubled] }
+    chained = orig.refined(RefinementsStringOnly).refined(RefinementsIntegerOnly)
+    assert_equal(["HI!", 6], chained.call("hi", 3))
+    # the intermediate proc has only its own module's refinements
+    assert_raise(NoMethodError) { orig.refined(RefinementsStringOnly).call("hi", 3) }
+    # the original is unaffected
+    assert_raise(NoMethodError) { orig.call("hi", 3) }
+    # the refinement state survives dup, so a dup chains the same way
+    via_dup = orig.refined(RefinementsStringOnly).dup.refined(RefinementsIntegerOnly)
+    assert_equal(["HI!", 6], via_dup.call("hi", 3))
+    # chained procs are still refined procs: define_method rejects them
+    assert_raise(ArgumentError) { Class.new { define_method(:m, chained) } }
+  end
+
+  # Both modules refine the same String#greet, so the result of a call tells
+  # which module's refinement won the conflict.
+  module RefinementsGreetA
+    refine String do
+      def greet = "A"
+    end
+  end
+
+  module RefinementsGreetB
+    refine String do
+      def greet = "B"
+    end
+  end
+
+  def test_refined_chain_associativity
+    # A chain behaves like a single call with the concatenated modules: when
+    # two modules refine the same method, the one applied last wins (as with
+    # nested using), whether the modules arrive chained or in one call, and
+    # swapping the order changes the winner.
+    orig = ->(s) { s.greet }
+    chain_ab  = orig.refined(RefinementsGreetA).refined(RefinementsGreetB)
+    single_ab = orig.refined(RefinementsGreetA, RefinementsGreetB)
+    chain_ba  = orig.refined(RefinementsGreetB).refined(RefinementsGreetA)
+    single_ba = orig.refined(RefinementsGreetB, RefinementsGreetA)
+    assert_equal("B", chain_ab.call(""))
+    assert_equal(single_ab.call(""), chain_ab.call(""))
+    assert_equal("A", chain_ba.call(""))
+    assert_equal(single_ba.call(""), chain_ba.call(""))
+    assert_not_equal(chain_ab.call(""), chain_ba.call(""))
+    # applying the same module twice is harmless
+    assert_equal("A", orig.refined(RefinementsGreetA).refined(RefinementsGreetA).call(""))
+  end
+
+  def test_refined_chain_memoized
+    # each step of a chain memoizes on its own copied iseq (keyed by the
+    # shared refinements table, not the per-proc cref), so repeating the
+    # chain hits every step's memo and never warns
+    assert_separately([], <<~'RUBY')
+      module M1; refine(String) { def shout = upcase + "!" }; end
+      module M2; refine(String) { def shout2 = downcase }; end
+      Warning[:performance] = true
+      $warned = []
+      def Warning.warn(msg, category: nil) = $warned << msg
+      orig = ->(s) { [s.shout, s.shout2] }
+      3.times do
+        assert_equal(["HI!", "hi"], orig.refined(M1).refined(M2).call("Hi"))
+      end
+      assert_empty($warned.grep(/disables memoization/))
+    RUBY
+  end
+
+  def test_refined_chain_non_main_ractor
+    assert_separately([], <<~'RUBY')
+      Warning[:experimental] = false
+      module M1; refine(String) { def shout = upcase + "!" }; end
+      module M2; refine(String) { def shout = downcase }; end
+      r = Ractor.new { ->(s) { s.shout }.refined(M1).refined(M2).call("Hi") }
+      assert_equal("hi", r.value)
+    RUBY
   end
 
   def test_refined_using_in_body_rejected
@@ -703,6 +776,9 @@ class TestProc < Test::Unit::TestCase
       assert_raise_with_message(RuntimeError, msg) { c.call }
       n = proc { -> { using M2 }.call }.refined(M1)
       assert_raise_with_message(RuntimeError, msg) { n.call }
+      # chained refined procs are refined procs too
+      h = proc { using M2 }.refined(M1).refined(M1)
+      assert_raise_with_message(RuntimeError, msg) { h.call }
       # plain procs are unaffected
       assert_equal("ok...", Module.new.module_eval(&proc { using M2; "ok".whisper }))
       # and the refined proc itself still works
@@ -736,12 +812,11 @@ class TestProc < Test::Unit::TestCase
   end
 
   def test_refined_nested_proc_is_not_a_chain
-    # A Proc created lexically INSIDE a refined Proc is not itself "a
-    # Proc that already has refinements": it only inherits the enclosing
-    # refinements lexically.  refined (and define_method) must therefore
-    # be accepted on it, and the inner Proc must see both the enclosing
-    # refinement and the one it adds.  Only the Proc returned by refined
-    # is rejected for chaining.
+    # A Proc created lexically INSIDE a refined Proc is not itself a
+    # refined Proc: it only inherits the enclosing refinements lexically.
+    # Calling refined on it is a first application (on the copied nested
+    # iseq), not a chained one, define_method accepts it, and the inner
+    # Proc must see both the enclosing refinement and the one it adds.
     result = -> {
       inner = ->(s, n) { [s.shout, n.doubled] }
       inner.refined(RefinementsStringOnly).call("hi", 3)
@@ -845,6 +920,10 @@ class TestProc < Test::Unit::TestCase
       # the rebuilt memo is hit from now on; no further warnings
       assert_equal([1, 2], pr.refined(M).call(1, k: 2))
       assert_equal(1, $warned.grep(/ruby2_keywords/).size)
+      # the flag travels along a chain: each step copies it from the
+      # previous step's iseq
+      module M2; refine(String) { def whisper = downcase }; end
+      assert_equal([1, 2], pr.refined(M).refined(M2).call(1, k: 2))
     RUBY
   end
 
@@ -995,8 +1074,8 @@ class TestProc < Test::Unit::TestCase
   def test_refined_preserved_by_clone
     refined = ->(s) { s.shout }.refined(RefinementsModule)
     assert_equal("Z!", refined.clone.call("z"))
-    # the refinement state survives clone, so chaining on the clone is rejected too
-    assert_raise(ArgumentError) { refined.clone.refined(RefinementsModule2) }
+    # the refinement state survives clone, so a clone chains the same way
+    assert_equal("?", refined.clone.refined(RefinementsModule2).call("z"))
   end
 
   def test_refined_module_precedence
