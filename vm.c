@@ -380,28 +380,6 @@ rb_vm_cref_dup(const rb_cref_t *cref)
     return new_cref;
 }
 
-/* Shallow-duplicate a memoized Proc#refined cref, sharing its frozen
- * refinements table instead of copying it.  Each refined proc gets its own
- * top cref so in-place mutations from the body (scope visibility) never
- * reach the shared memo cref. */
-rb_cref_t *
-rb_vm_cref_dup_with_shared_refinements(const rb_cref_t *cref)
-{
-    const rb_scope_visibility_t *visi = CREF_SCOPE_VISI(cref);
-    rb_cref_t *next_cref = CREF_NEXT(cref), *new_cref;
-    int pushed_by_eval = CREF_PUSHED_BY_EVAL(cref);
-    int singleton = CREF_SINGLETON(cref);
-
-    new_cref = vm_cref_new(cref->klass_or_self, visi->method_visi, visi->module_func, next_cref, pushed_by_eval, singleton);
-
-    if (!NIL_P(CREF_REFINEMENTS(cref))) {
-        CREF_REFINEMENTS_SET(new_cref, CREF_REFINEMENTS(cref));
-        CREF_OMOD_SHARED_SET(new_cref);
-    }
-
-    return new_cref;
-}
-
 rb_cref_t *
 rb_vm_cref_dup_without_refinements(const rb_cref_t *cref)
 {

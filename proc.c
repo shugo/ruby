@@ -454,16 +454,12 @@ proc_refined(int argc, VALUE *argv, VALUE self)
             RB_OBJ_SET_SHAREABLE(refs);
         }
         CREF_OMOD_SHARED_SET(cref);
+        CREF_REFINED_PROC_SET(cref);
         new_cref = cref;
         rb_iseq_refinement_memo_store(src_iseq, base_cref, argc, argv, new_iseq, new_cref);
     }
 
-    /* The memoized cref is an immutable template shared with other procs
-     * (and other Ractors); hand this proc a shallow copy so cref mutations
-     * from the body (scope visibility) stay per-proc. */
-    rb_cref_t *proc_cref = rb_vm_cref_dup_with_shared_refinements(new_cref);
-    CREF_REFINED_PROC_SET(proc_cref);
-    return rb_proc_dup_with_iseq_and_cref(self, new_iseq, proc_cref);
+    return rb_proc_dup_with_iseq_and_cref(self, new_iseq, new_cref);
 }
 
 /*
