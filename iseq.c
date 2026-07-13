@@ -247,12 +247,7 @@ rb_iseq_free(const rb_iseq_t *iseq)
  *
  *   [base_cref, copied_iseq, cref, mod1, mod2, ...]
  *
- * keyed by (base_cref, modules).  Lookup and store are lock-free: lookup
- * acquire-loads the memo, store publishes a fully-populated Array with a
- * release store (last writer wins; replaced memos are reclaimed by GC).
- * Everything in the memo is shareable (proc_refined freezes the cref's
- * refinements Hash), so a memo stored by one Ractor may be reused by
- * another.  The memo is retained for the lifetime of the source iseq. */
+ * keyed by (base_cref, modules). */
 
 enum iseq_refinement_memo_index {
     REFINEMENT_MEMO_BASE_CREF,   /* key: captured cref of the source proc */
@@ -274,10 +269,6 @@ iseq_refinement_memo_key_match(VALUE memo, VALUE base_cref,
     return true;
 }
 
-/* On a key hit, fill *iseq_out / *cref_out and return true.  A memo whose
- * copy no longer matches the source's ruby2_keywords flag (the source may
- * be marked after memoization) is a miss: the copy is rebuilt rather than
- * mutated, so procs built before the mark keep their behavior. */
 bool
 rb_iseq_refinement_memo_lookup(const rb_iseq_t *src_iseq, VALUE base_cref,
                                long argc, const VALUE *mods,
