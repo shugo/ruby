@@ -134,6 +134,8 @@ module Prism
   #    VERSION: String
   #    BACKEND: :CEXT | :FFI
   #
+  #    def self.backends: () -> Array[Symbol]
+  #
   #    interface _Stream
   #      def gets: (?Integer integer) -> (String | nil)
   #    end
