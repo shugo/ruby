@@ -67,6 +67,7 @@
 
 #include "prism/internal/allocator.h"
 #include "prism/internal/arena.h"
+#include "prism/internal/buffer.h"
 #include "prism/internal/constant_pool.h"
 #include "prism/internal/diagnostic.h"
 #include "prism/internal/encoding.h"
@@ -1067,6 +1068,11 @@ struct parser_params {
      * heredoc, whose per-line chunks must not be merged back together (the
      * strterm may already be restored when the reduction runs). */
     unsigned int ycontent_squiggly: 1;
+
+    /* fork: an invalid wide Unicode escape was reported in the current
+     * literal; at end of file the hand parser then blames the opening
+     * delimiter instead of the end of file. */
+    unsigned int yuescape_invalid: 1;
 
     /* fork: the encoding an escape sequence in the current literal forced,
      * mirroring the hand parser's explicit_encoding: \u sets UTF-8, a byte
@@ -2406,6 +2412,13 @@ get_nd_args(struct parser_params *p, NODE *node)
         }
         return (NODE *) cast->arguments;
     }
+    if (node != NULL && PM_NODE_TYPE_P(node, PM_SUPER_NODE)) {
+        pm_super_node_t *cast = (pm_super_node_t *) node;
+        if (cast->block != NULL && PM_NODE_TYPE_P(cast->block, PM_BLOCK_ARGUMENT_NODE)) {
+            return cast->block;
+        }
+        return (NODE *) cast->arguments;
+    }
     return NULL;
 }
 
@@ -3083,7 +3096,14 @@ bodystmt	: compstmt(stmts)[body]
                   opt_rescue
                   k_else
                     {
-                        if (!$opt_rescue) yyerror1(&@k_else, "else without rescue is useless");
+                        if (!$opt_rescue) {
+                            /* the hand parser's combined wording */
+                            pm_diagnostic_list_append(
+                                &p->pm->metadata_arena, &p->pm->error_list,
+                                @k_else.beg, @k_else.end - @k_else.beg,
+                                PM_ERR_BEGIN_LONELY_ELSE);
+                            p->error_p = 1;
+                        }
                         next_rescue_context(&p->ctxt, &$ctxt, after_else);
                     }
                   compstmt(stmts)[elsebody]
@@ -3338,6 +3358,7 @@ expr		: command_call
 
 def_name	: fname
                     {
+                        p->ylvar_beg = @fname.beg;
                         numparam_name(p, $fname);
                         local_push(p, 0);
                         p->ctxt.in_def = 1;
@@ -3988,7 +4009,11 @@ rel_expr	: arg relop arg   %prec '>'
                     }
                 | rel_expr relop arg   %prec '>'
                     {
-                        rb_warning1("comparison '%s' after comparison", WARN_ID($2));
+                        pm_diagnostic_list_append_format(
+                            &p->pm->metadata_arena, &p->pm->warning_list,
+                            @2.beg, @2.end - @2.beg,
+                            PM_WARN_COMPARISON_AFTER_COMPARISON,
+                            (int) (@2.end - @2.beg), (const char *) p->pm->start + @2.beg);
                         $$ = call_bin_op(p, $1, $2, $3, &@2, &@$);
                     }
                 | rel_expr relop error   %prec '>'
@@ -6162,6 +6187,7 @@ f_bad_arg	: tCONSTANT
 f_norm_arg	: f_bad_arg
                 | tIDENTIFIER
                     {
+                        p->ylvar_beg = @1.beg;
                         VALUE e = formal_argument_error(p, $$ = $1);
                         if (e) {
                         }
@@ -6218,6 +6244,7 @@ f_arg		: f_arg_item
 
 f_label 	: tLABEL
                     {
+                        p->ylvar_beg = @1.beg;
                         VALUE e = formal_argument_error(p, $$ = $1);
                         if (e) {
                             $$ = 0;
@@ -7181,7 +7208,13 @@ escaped_control_code(int c)
 }
 
 #define WARN_SPACE_CHAR(c, prefix) \
-    rb_warn1("invalid character syntax; use "prefix"\\%c", WARN_I(c))
+    do { \
+        char pm_ywsc[2] = { (char) (c), '\0' }; \
+        pm_diagnostic_list_append_format( \
+            &p->pm->metadata_arena, &p->pm->warning_list, \
+            YOFF(p->lex.ptok), (uint32_t) (p->lex.pcur - p->lex.ptok), \
+            PM_WARN_INVALID_CHARACTER, prefix, "\\", pm_ywsc); \
+    } while (0)
 
 static int
 tokadd_codepoint(struct parser_params *p, rb_encoding **encp,
@@ -7203,13 +7236,34 @@ tokadd_codepoint(struct parser_params *p, rb_encoding **encp,
         if (!begin) begin = p->lex.pcur;
         if (wide ? (numlen == 0 || numlen > 6) : (numlen < 4))  {
             flush_string_content(p, rb_utf8_encoding(), p->lex.pcur - begin);
-            yyerror0("invalid Unicode escape");
+            if (!wide && numlen == 0) {
+                /* nothing after \u: the hand parser calls it too short */
+                const char *escape = p->lex.pcur - 2;
+                pm_diagnostic_list_append_format(
+                    &p->pm->metadata_arena, &p->pm->error_list,
+                    YOFF(escape), 2, PM_ERR_ESCAPE_INVALID_UNICODE_SHORT, 2, escape);
+                p->error_p = 1;
+            }
+            else if (!wide) {
+                const char *escape = p->lex.pcur - numlen - 2;
+                pm_diagnostic_list_append(
+                    &p->pm->metadata_arena, &p->pm->error_list,
+                    YOFF(escape), (uint32_t) (p->lex.pcur - escape), PM_ERR_ESCAPE_INVALID_UNICODE);
+                p->error_p = 1;
+            }
+            else {
+                yyerror0("invalid Unicode escape sequence");
+            }
             dispatch_scan_event(p, tSTRING_CONTENT);
             return wide && numlen > 0;
         }
         if (codepoint > 0x10ffff) {
             flush_string_content(p, rb_utf8_encoding(), p->lex.pcur - begin);
-            yyerror0("invalid Unicode codepoint (too large)");
+            pm_diagnostic_list_append(
+                &p->pm->metadata_arena, &p->pm->error_list,
+                YOFF(p->lex.pcur) - (uint32_t) numlen, (uint32_t) numlen,
+                PM_ERR_ESCAPE_INVALID_UNICODE);
+            p->error_p = 1;
             dispatch_scan_event(p, tSTRING_CONTENT);
             return wide;
         }
@@ -7219,6 +7273,15 @@ tokadd_codepoint(struct parser_params *p, rb_encoding **encp,
             dispatch_scan_event(p, tSTRING_CONTENT);
             return wide;
         }
+    }
+    else if (numlen == 0 && p->lex.pcur >= p->lex.pend) {
+        /* a regexp cut off right after \u: prism's regexp parser never sees
+         * the unterminated content, so report it here like the hand parser */
+        const char *escape = p->lex.pcur - 2;
+        pm_diagnostic_list_append_format(
+            &p->pm->metadata_arena, &p->pm->error_list,
+            YOFF(escape), 2, PM_ERR_ESCAPE_INVALID_UNICODE_SHORT, 2, escape);
+        p->error_p = 1;
     }
     if (regexp_literal) {
         tokcopy(p, (int)numlen);
@@ -7277,15 +7340,19 @@ tokadd_utf8(struct parser_params *p, rb_encoding **encp,
              * invalid unicode escapes are allowed in comments. The regexp parser
              * does its own validation and will catch any issues.
              */
+            const char *ubeg = p->lex.pcur - 2;
+            bool hit_term = false;
             tokadd(p, open_brace);
             while (!lex_eol_ptr_p(p, ++p->lex.pcur)) {
                 int c = peekc(p);
                 if (c == close_brace) {
                     tokadd(p, c);
                     ++p->lex.pcur;
+                    hit_term = true;
                     break;
                 }
                 else if (c == term) {
+                    hit_term = true;
                     break;
                 }
                 if (c == '\\' && !lex_eol_n_p(p, 1)) {
@@ -7294,22 +7361,35 @@ tokadd_utf8(struct parser_params *p, rb_encoding **encp,
                 }
                 tokadd_mbchar(p, c);
             }
+            /* a list cut off by the end of file never reaches the regexp
+             * parser; the hand parser reports what it has seen */
+            if (!hit_term && YOFF(p->lex.pend) == (uint32_t) (p->pm->end - p->pm->start)) {
+                pm_diagnostic_list_append_format(
+                    &p->pm->metadata_arena, &p->pm->error_list,
+                    YOFF(ubeg), (uint32_t) (p->lex.pcur - ubeg),
+                    PM_ERR_ESCAPE_INVALID_UNICODE_LIST,
+                    (int) (p->lex.pcur - ubeg), ubeg);
+                p->error_p = 1;
+            }
         }
         else {
             const char *second = NULL;
+            const char *ubeg = p->lex.pcur - 2;
             int c, last = nextc(p);
-            if (lex_eol_p(p)) goto unterminated;
+            if (lex_eol_p(p)) goto unterminated_list;
             while (ISSPACE(c = peekc(p)) && !lex_eol_ptr_p(p, ++p->lex.pcur));
             while (c != close_brace) {
                 if (c == term) goto unterminated;
+                if (c == -1 || lex_eol_p(p)) goto unterminated_list;
                 if (second == multiple_codepoints)
                     second = p->lex.pcur;
                 if (regexp_literal) tokadd(p, last);
                 if (!tokadd_codepoint(p, encp, regexp_literal, NULL)) {
+                    p->yuescape_invalid = 1;
                     break;
                 }
                 while (ISSPACE(c = peekc(p))) {
-                    if (lex_eol_ptr_p(p, ++p->lex.pcur)) goto unterminated;
+                    if (lex_eol_ptr_p(p, ++p->lex.pcur)) goto unterminated_list;
                     last = c;
                 }
                 if (term == -1 && !second)
@@ -7320,6 +7400,18 @@ tokadd_utf8(struct parser_params *p, rb_encoding **encp,
               unterminated:
                 flush_string_content(p, rb_utf8_encoding(), 0);
                 yyerror0("unterminated Unicode escape");
+                dispatch_scan_event(p, tSTRING_CONTENT);
+                return;
+              unterminated_list:
+                /* nothing but the list's own text before the end of input:
+                 * the hand parser reports the list, not the escape */
+                flush_string_content(p, rb_utf8_encoding(), 0);
+                pm_diagnostic_list_append_format(
+                    &p->pm->metadata_arena, &p->pm->error_list,
+                    YOFF(ubeg), (uint32_t) (p->lex.pcur - ubeg),
+                    PM_ERR_ESCAPE_INVALID_UNICODE_LIST,
+                    (int) (p->lex.pcur - ubeg), ubeg);
+                p->error_p = 1;
                 dispatch_scan_event(p, tSTRING_CONTENT);
                 return;
             }
@@ -8089,12 +8181,24 @@ parse_string(struct parser_params *p, rb_strterm_literal_t *quote)
             if (func & STR_FUNC_REGEXP) {
                 unterminated_literal(PM_ERR_REGEXP_TERM, obeg, olen);
             }
+            else if (p->yuescape_invalid) {
+                /* after an invalid wide Unicode escape, the hand parser
+                 * blames the opening delimiter */
+                unterminated_literal(PM_ERR_STRING_INTERPOLATED_TERM, obeg, 1);
+            }
             else if (func & STR_FUNC_EXPAND) {
-                unterminated_literal(PM_ERR_STRING_LITERAL_EOF, YOFF(p->lex.pcur), 0);
+                /* at the end of file, before its final newline */
+                uint32_t eofpos = YOFF(p->lex.pcur);
+                if (eofpos > 0 && p->pm->start[eofpos - 1] == '\n') {
+                    eofpos--;
+                    if (eofpos > 0 && p->pm->start[eofpos - 1] == '\r') eofpos--;
+                }
+                unterminated_literal(PM_ERR_STRING_LITERAL_EOF, eofpos, 0);
             }
             else {
                 unterminated_literal(PM_ERR_STRING_LITERAL_EOF, obeg, olen);
             }
+            p->yuescape_invalid = 0;
             quote->func |= STR_FUNC_TERM;
         }
     }
@@ -8628,8 +8732,25 @@ static VALUE
 formal_argument_error(struct parser_params *p, ID id)
 {
     switch (id_type(id)) {
-      case ID_LOCAL:
+      case ID_LOCAL: {
+        /* the yid shim classifies ?- and !-suffixed names as locals; as a
+         * parameter name they get the hand parser's wording */
+        pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
+        if (constant_id != PM_CONSTANT_ID_UNSET) {
+            pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
+            if (constant->length > 0 &&
+                (constant->start[constant->length - 1] == '?' || constant->start[constant->length - 1] == '!')) {
+                pm_diagnostic_list_append_format(
+                    &p->pm->metadata_arena, &p->pm->error_list,
+                    p->ylvar_beg, (uint32_t) constant->length,
+                    PM_ERR_INVALID_LOCAL_VARIABLE_WRITE,
+                    (int) constant->length, (const char *) constant->start);
+                p->error_p = 1;
+                return Qtrue;
+            }
+        }
         break;
+      }
 # define ERR(mesg) (yyerror0(mesg), Qtrue)
       case ID_CONST:
         return ERR("formal argument cannot be a constant");
@@ -8675,13 +8796,37 @@ parser_encode_length(struct parser_params *p, const char *name, long len)
     return len;
 }
 
+/* The span of the current line's comment, from its '#' through the newline,
+ * which is the token the hand parser anchors magic-comment warnings to. */
+static pm_location_t
+pm_ymagic_comment_loc(struct parser_params *p)
+{
+    const char *start = p->lex.pbeg;
+    while (start < p->lex.pend && *start != '#') start++;
+    return (pm_location_t) { YOFF(start), (uint32_t) (p->lex.pend - start) };
+}
+
 static void
 parser_set_encode(struct parser_params *p, const char *name)
 {
     const pm_encoding_t *enc = pm_encoding_find((const uint8_t *) name, (const uint8_t *) name + strlen(name));
 
     if (enc == NULL) {
-        compile_error(p, "unknown encoding name: %s", name);
+        /* the hand parser's argument-level diagnostic, which the embedding
+         * interpreter surfaces as an ArgumentError, anchored at the value */
+        pm_location_t loc = pm_ymagic_comment_loc(p);
+        size_t name_length = strlen(name);
+        const uint8_t *comment = p->pm->start + loc.start;
+        for (uint32_t i = 0; name_length > 0 && i + name_length <= loc.length; i++) {
+            if (memcmp(comment + i, name, name_length) == 0) {
+                loc = (pm_location_t) { loc.start + i, (uint32_t) name_length };
+                break;
+            }
+        }
+        pm_diagnostic_list_append(
+            &p->pm->metadata_arena, &p->pm->error_list, loc.start, loc.length,
+            PM_ERR_INVALID_ENCODING_MAGIC_COMMENT);
+        p->error_p = 1;
         return;
     }
 
@@ -8728,16 +8873,6 @@ parser_get_bool(struct parser_params *p, const char *name, const char *val)
         break;
     }
     return parser_invalid_pragma_value(p, name, val);
-}
-
-/* The span of the current line's comment, from its '#' through the newline,
- * which is the token the hand parser anchors magic-comment warnings to. */
-static pm_location_t
-pm_ymagic_comment_loc(struct parser_params *p)
-{
-    const char *start = p->lex.pbeg;
-    while (start < p->lex.pend && *start != '#') start++;
-    return (pm_location_t) { YOFF(start), (uint32_t) (p->lex.pend - start) };
 }
 
 static int
@@ -9069,9 +9204,11 @@ parser_prepare(struct parser_params *p)
         YOFF(p->lex.ptok), (uint32_t) (p->lex.pcur - p->lex.ptok), __VA_ARGS__)
 
 /* upstream splits this into two rb_warning0 lines; the hand parser's single
- * diagnostic carries both halves, so match it. */
+ * diagnostic carries both halves, so match it. The '%' spelling arrives
+ * doubled for upstream's printf and must come back down to one. */
 #define ambiguous_operator(tok, op, syn) \
-    YWARN_TOKEN_FORMAT(PM_WARN_AMBIGUOUS_BINARY_OPERATOR, op, syn)
+    YWARN_TOKEN_FORMAT(PM_WARN_AMBIGUOUS_BINARY_OPERATOR, \
+                       (strcmp(op, "%%") == 0 ? "%" : op), syn)
 #define warn_balanced(tok, op, syn) ((void) \
     (!IS_lex_state_for(last_state, EXPR_CLASS|EXPR_DOT|EXPR_FNAME|EXPR_ENDFN) && \
      space_seen && !ISSPACE(c) && \
@@ -9580,7 +9717,10 @@ parse_numvar(struct parser_params *p)
 
     if (overflow || n > nth_ref_max) {
         /* compile_error()? */
-        rb_warn1("'%s' is too big for a number variable, always nil", WARN_S(tok(p)));
+        pm_diagnostic_list_append_format(
+            &p->pm->metadata_arena, &p->pm->warning_list,
+            YOFF(p->lex.ptok) + 1, (uint32_t) (toklen(p) - 1),
+            PM_WARN_INVALID_NUMBERED_REFERENCE, toklen(p), tok(p));
         return 0;		/* $0 is $PROGRAM_NAME, not NTH_REF */
     }
     else {
@@ -9679,8 +9819,10 @@ parse_gvar(struct parser_params *p, const enum lex_state_e last_state)
                 compile_error(p, "'$' without identifiers is not allowed as a global variable name");
             }
             else {
+                /* the span covers the punctuation character too */
+                YYLTYPE badloc = { YOFF(p->lex.ptok), YOFF(p->lex.pcur) };
                 pushback(p, c);
-                compile_error(p, "'$%c' is not allowed as a global variable name", c);
+                parser_compile_error(p, &badloc, "'$%c' is not allowed as a global variable name", c);
             }
             parser_show_error_line(p, &loc);
             set_yylval_noname();
@@ -12020,6 +12162,10 @@ pm_ymarker_param(struct parser_params *p, NODE **slot, int kind, ID name, const 
 static NODE *
 pm_ykw_param(struct parser_params *p, ID label, NODE *value, const YYLTYPE *label_loc, const YYLTYPE *loc)
 {
+    /* id 0 arrives from f_label's error path; a nameless parameter cannot be
+     * materialized */
+    if (label == 0) return NULL;
+
     /* the label token includes its colon; the name does not */
     pm_location_t name_location = pm_yloc(label_loc);
     pm_constant_id_t name = pm_yid2const(p, label);
@@ -12085,6 +12231,26 @@ pm_ycase(struct parser_params *p, NODE *predicate, NODE *body, const YYLTYPE *lo
     else if (body != NULL) {
         YSTUB("pm_ycase");
     }
+
+    /* the duplicated-when warning, over the static-literal conditions */
+    pm_static_literals_t literals = { 0 };
+    for (size_t i = 0; i < conditions.size; i++) {
+        if (!PM_NODE_TYPE_P(conditions.nodes[i], PM_WHEN_NODE)) continue;
+        pm_node_list_t *conds = &((pm_when_node_t *) conditions.nodes[i])->conditions;
+        for (size_t j = 0; j < conds->size; j++) {
+            pm_node_t *cond = conds->nodes[j];
+            pm_node_t *previous = pm_static_literals_add(&p->pm->line_offsets, p->pm->start, p->pm->start_line, &literals, cond, false);
+            if (previous != NULL) {
+                pm_diagnostic_list_append_format(
+                    &p->pm->metadata_arena, &p->pm->warning_list,
+                    cond->location.start, cond->location.length,
+                    PM_WARN_DUPLICATED_WHEN_CLAUSE,
+                    pm_line_offset_list_line_column(&p->pm->line_offsets, cond->location.start, p->pm->start_line).line,
+                    pm_line_offset_list_line_column(&p->pm->line_offsets, previous->location.start, p->pm->start_line).line);
+            }
+        }
+    }
+    pm_static_literals_free(&literals);
 
     return (NODE *) pm_case_node_new(
         p->pm->arena, ++p->pm->node_id, 0, pm_yloc(loc),
@@ -13283,7 +13449,28 @@ rb_node_integer_new(struct parser_params *p, char* val, int base, const YYLTYPE 
     }
 
     pm_integer_node_t *node = pm_integer_node_new(p->pm->arena, ++p->pm->node_id, flags, pm_yloc(loc), ((pm_integer_t) { 0 }));
-    pm_integer_parse(&node->value, integer_base, p->pm->start + loc->beg, p->pm->start + loc->end);
+
+    /* an errored literal's span can still cover the offending characters
+     * (1_.0 after the trailing-underscore error); stop where the digits do */
+    const uint8_t *start = p->pm->start + loc->beg;
+    const uint8_t *end = p->pm->start + loc->end;
+    const uint8_t *cursor = start;
+    while (cursor < end && (*cursor == '+' || *cursor == '-')) cursor++;
+    if (cursor + 1 < end && cursor[0] == '0' && ISALPHA(cursor[1])) cursor += 2;
+    while (cursor < end) {
+        uint8_t ch = *cursor;
+        bool valid = ch == '_';
+        switch (integer_base) {
+          case PM_INTEGER_BASE_BINARY: valid = valid || (ch >= '0' && ch <= '1'); break;
+          case PM_INTEGER_BASE_OCTAL: valid = valid || (ch >= '0' && ch <= '7'); break;
+          case PM_INTEGER_BASE_HEXADECIMAL: valid = valid || ISXDIGIT(ch); break;
+          default: valid = valid || (ch >= '0' && ch <= '9'); break;
+        }
+        if (!valid) break;
+        cursor++;
+    }
+
+    pm_integer_parse(&node->value, integer_base, start, cursor);
     pm_yinteger_arena_move(p->pm->arena, &node->value);
     return (rb_node_integer_t *) node;
 }
@@ -15047,13 +15234,35 @@ is_private_local_id(struct parser_params *p, ID name)
     return constant->length > 0 && constant->start[0] == '_';
 }
 
+/* The length of a dynamic id's name; 0 when unknown. */
+static uint32_t
+pm_yid_name_length(struct parser_params *p, ID name)
+{
+    pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, name);
+    if (constant_id == PM_CONSTANT_ID_UNSET) return 0;
+    pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
+    return (uint32_t) constant->length;
+}
+
+/* The hand parser anchors this error at the repeated name (ylvar_beg is set
+ * by every parameter-name action before it can get here). */
+static void
+pm_ydup_arg_error(struct parser_params *p, ID name)
+{
+    pm_diagnostic_list_append(
+        &p->pm->metadata_arena, &p->pm->error_list,
+        p->ylvar_beg, pm_yid_name_length(p, name),
+        PM_ERR_PARAMETER_NAME_DUPLICATED);
+    p->error_p = 1;
+}
+
 static int
 shadowing_lvar_0(struct parser_params *p, ID name)
 {
     if (dyna_in_block(p)) {
         if (dvar_curr(p, name)) {
             if (is_private_local_id(p, name)) return 1;
-            yyerror0("duplicated argument name");
+            pm_ydup_arg_error(p, name);
         }
         else if (dvar_defined(p, name) || local_id(p, name)) {
             vtable_add(p->lvtbl->vars, name);
@@ -15066,7 +15275,7 @@ shadowing_lvar_0(struct parser_params *p, ID name)
     else {
         if (local_id(p, name)) {
             if (is_private_local_id(p, name)) return 1;
-            yyerror0("duplicated argument name");
+            pm_ydup_arg_error(p, name);
         }
     }
     return 1;
@@ -15160,10 +15369,24 @@ aryset(struct parser_params *p, NODE *recv, NODE *idx, const YYLTYPE *loc)
     return NEW_ATTRASGN(recv, tASET, idx, loc);
 }
 
+/* Whether the argument list forwards `...`, which carries the block too. */
+static bool
+pm_yargs_forwarding_p(NODE *args)
+{
+    pm_node_list_t *elements = NULL;
+    if (args != NULL && PM_NODE_TYPE_P(args, PM_ARRAY_NODE)) elements = &((pm_array_node_t *) args)->elements;
+    else if (args != NULL && PM_NODE_TYPE_P(args, PM_ARGUMENTS_NODE)) elements = &((pm_arguments_node_t *) args)->arguments;
+    if (elements == NULL) return false;
+    for (size_t i = 0; i < elements->size; i++) {
+        if (elements->nodes[i] != NULL && PM_NODE_TYPE_P(elements->nodes[i], PM_FORWARDING_ARGUMENTS_NODE)) return true;
+    }
+    return false;
+}
+
 static void
 block_dup_check(struct parser_params *p, NODE *node1, NODE *node2)
 {
-    if (node2 && node1 && pm_yargs_block_pass(node1)) {
+    if (node2 && node1 && (pm_yargs_block_pass(node1) || pm_yargs_forwarding_p(node1))) {
         pm_diagnostic_list_append(
             &p->pm->metadata_arena, &p->pm->error_list,
             node2->location.start, node2->location.length,
@@ -16202,6 +16425,19 @@ new_args(struct parser_params *p, rb_node_args_aux_t *pre_args, rb_node_opt_arg_
             (pm_node_list_t) { 0 }, (pm_node_list_t) { 0 }, NULL, NULL);
     }
 
+    /* an explicit rest argument cannot be combined with `...`, as upstream
+     * checks here in new_args */
+    if (rest != NULL && rest_arg != NODE_SPECIAL_EXCESSIVE_COMMA &&
+        parameters->keyword_rest != NULL &&
+        PM_NODE_TYPE_P(parameters->keyword_rest, PM_FORWARDING_PARAMETER_NODE)) {
+        pm_diagnostic_list_append(
+            &p->pm->metadata_arena, &p->pm->error_list,
+            parameters->keyword_rest->location.start,
+            parameters->keyword_rest->location.length,
+            PM_ERR_PARAMETER_FORWARDING_AFTER_REST);
+        p->error_p = 1;
+    }
+
     parameters->requireds = requireds;
     parameters->optionals = optionals;
     parameters->rest = rest;
@@ -16429,6 +16665,28 @@ dsym_node(struct parser_params *p, NODE *node, const YYLTYPE *loc)
         else if (pm_ystr_ascii_only(&unescaped) && (single_quoted || first == '%' || pm_string_length(&unescaped) > 0)) {
             flags |= PM_SYMBOL_FLAGS_FORCED_US_ASCII_ENCODING;
         }
+
+        /* escape-produced bytes must form valid characters in the symbol's
+         * encoding, as in the hand parser's parse_symbol_encoding; a binary
+         * symbol accepts anything */
+        if (!(flags & PM_SYMBOL_FLAGS_FORCED_BINARY_ENCODING)) {
+            const pm_encoding_t *venc = (flags & PM_SYMBOL_FLAGS_FORCED_UTF8_ENCODING)
+                ? PM_ENCODING_UTF_8_ENTRY : (const pm_encoding_t *) p->enc;
+            const uint8_t *cursor = pm_string_source(&unescaped);
+            const uint8_t *end = cursor + pm_string_length(&unescaped);
+            while (cursor < end) {
+                size_t width = venc->char_width(cursor, (ptrdiff_t) (end - cursor));
+                if (width == 0) {
+                    pm_diagnostic_list_append(
+                        &p->pm->metadata_arena, &p->pm->error_list,
+                        location.start, location.length, PM_ERR_INVALID_SYMBOL);
+                    p->error_p = 1;
+                    break;
+                }
+                cursor += width;
+            }
+        }
+
         return (NODE *) pm_symbol_node_new(
             p->pm->arena, ++p->pm->node_id, flags, location,
             opening, value, closing, unescaped);
@@ -16503,6 +16761,32 @@ new_hash(struct parser_params *p, NODE *hash, const YYLTYPE *loc)
             break;
         }
     }
+
+    /* the duplicated-key warning, anchored at the overwritten key, as the
+     * hand parser's pm_hash_key_static_literals_add */
+    pm_static_literals_t literals = { 0 };
+    for (size_t i = 0; i < elements.size; i++) {
+        pm_node_t *element = elements.nodes[i];
+        if (!PM_NODE_TYPE_P(element, PM_ASSOC_NODE)) continue;
+        pm_node_t *key = ((pm_assoc_node_t *) element)->key;
+        if (key == NULL) continue;
+        const pm_node_t *duplicated = pm_static_literals_add(
+            &p->pm->line_offsets, p->pm->start, p->pm->start_line, &literals, key, true);
+        if (duplicated != NULL) {
+            pm_buffer_t buffer = { 0 };
+            pm_static_literal_inspect(
+                &buffer, &p->pm->line_offsets, p->pm->start, p->pm->start_line,
+                p->pm->encoding->name, duplicated);
+            pm_diagnostic_list_append_format(
+                &p->pm->metadata_arena, &p->pm->warning_list,
+                duplicated->location.start, duplicated->location.length,
+                PM_WARN_DUPLICATED_HASH_KEY,
+                (int) pm_buffer_length(&buffer), pm_buffer_value(&buffer),
+                pm_line_offset_list_line_column(&p->pm->line_offsets, key->location.start, p->pm->start_line).line);
+            pm_buffer_cleanup(&buffer);
+        }
+    }
+    pm_static_literals_free(&literals);
 
     return (NODE *) pm_keyword_hash_node_new(
         p->pm->arena, ++p->pm->node_id, flags, location, elements);
@@ -16602,6 +16886,24 @@ new_ary_op_assign(struct parser_params *p, NODE *ary,
                   NODE *args, ID op, NODE *rhs, const YYLTYPE *args_loc, const YYLTYPE *loc,
                   const YYLTYPE *call_operator_loc, const YYLTYPE *opening_loc, const YYLTYPE *closing_loc, const YYLTYPE *binary_operator_loc)
 {
+    /* kwargs and blocks are as invalid here as in a plain index assignment */
+    aryset_check(p, args);
+
+    /* a &block parked inside the brackets can be taken by a call in a
+     * command rhs before this reduction runs; it lies textually inside the
+     * index, where it is just as invalid */
+    if (rhs != NULL && PM_NODE_TYPE_P(rhs, PM_CALL_NODE) &&
+        p->pm->version >= PM_OPTIONS_VERSION_CRUBY_3_4) {
+        pm_call_node_t *call = (pm_call_node_t *) rhs;
+        if (call->block != NULL && PM_NODE_TYPE_P(call->block, PM_BLOCK_ARGUMENT_NODE) &&
+            call->block->location.start < (uint32_t) closing_loc->beg) {
+            pm_diagnostic_list_append(
+                &p->pm->metadata_arena, &p->pm->error_list,
+                call->block->location.start, call->block->location.length,
+                PM_ERR_UNEXPECTED_INDEX_BLOCK);
+        }
+    }
+
     pm_location_t location = pm_yloc(loc);
     pm_location_t operator = pm_yloc(binary_operator_loc);
     pm_arguments_node_t *arguments = pm_yargs_from_list(p, args);
@@ -17361,12 +17663,16 @@ rb_yytnamerr(struct parser_params *p, char *yyres, const char *yystr)
     size_t length = rb_yytnamerr0(p, scratch, yystr);
 
     if (scratch[0] == '\'') {
-        /* "'do' for block" -> "'do'" */
+        /* "'do' for block" -> "'do'"; other suffixes ("'rescue' modifier")
+         * are part of the hand parser's spelling and stay */
         char *closing = strchr(scratch + 1, '\'');
-        if (closing != NULL && closing[1] != '\0') {
+        if (closing != NULL && strncmp(closing + 1, " for ", 5) == 0) {
             closing[1] = '\0';
             length = (size_t) (closing + 1 - scratch);
         }
+    }
+    else if (strcmp(scratch, "<<") == 0 || strcmp(scratch, "..") == 0 || strcmp(scratch, "...") == 0) {
+        /* the hand parser prints these operators bare */
     }
     else {
         bool bare_operator = length > 0;
@@ -17684,7 +17990,7 @@ pm_yerror_prepend_context(struct parser_params *p, const YYLTYPE *yylloc, const 
     }
 
     static const char *const eq_class[] = { "'=='", "'!='", "'==='", "'=~'", "'!~'", "'<=>'", NULL };
-    static const char *const range_class[] = { "'..'", "'...'", NULL };
+    static const char *const range_class[] = { "..", "...", NULL };
     static const char *const match_class[] = { "'=>'", "'in'", NULL };
     static const char *const endless_continuations[] = { "'&'", "'*'", "'.'", "'&.'", NULL };
 
@@ -17715,9 +18021,6 @@ pm_yerror_prepend_context(struct parser_params *p, const YYLTYPE *yylloc, const 
         return;
     }
 
-    /* the hand parser prints range operators bare */
-    if (strcmp(unexpected, "'..'") == 0) unexpected = "..";
-    else if (strcmp(unexpected, "'...'") == 0) unexpected = "...";
     pm_diagnostic_list_append_format(
         &p->pm->metadata_arena, &p->pm->error_list,
         yylloc->beg, yylloc->end - yylloc->beg,
