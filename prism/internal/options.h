@@ -46,6 +46,28 @@ typedef enum {
     PM_OPTIONS_VERSION_LATEST = PM_OPTIONS_VERSION_CRUBY_4_1
 } pm_options_version_t;
 
+/*
+ * The parser implementation that should be used to parse the source. Prism
+ * ships two: the hand-written recursive descent parser that it has always used,
+ * and a parser generated from a fork of CRuby's parse.y grammar. Both are
+ * compiled into the library and produce the same AST, so this is a per-parse
+ * choice.
+ */
+typedef enum {
+    /*
+     * If a backend is not requested explicitly, the PRISM_PARSER_BACKEND
+     * environment variable is consulted, and the hand-written parser is used if
+     * that is unset as well.
+     */
+    PM_OPTIONS_BACKEND_UNSET = 0,
+
+    /* Prism's hand-written recursive descent parser. */
+    PM_OPTIONS_BACKEND_HANDWRITTEN = 1,
+
+    /* The parser generated from the fork of CRuby's parse.y grammar. */
+    PM_OPTIONS_BACKEND_PARSE_Y = 2
+} pm_options_backend_t;
+
 /* The options that can be passed to the parser. */
 struct pm_options_t {
     /*
@@ -95,6 +117,9 @@ struct pm_options_t {
 
     /* A bitset of the various options that were set on the command line. */
     uint8_t command_line;
+
+    /* The parser implementation that should be used to parse the source. */
+    pm_options_backend_t backend;
 
     /*
     * Whether or not the frozen string literal option has been set.
@@ -167,6 +192,7 @@ void pm_options_cleanup(pm_options_t *options);
  * | `1`     | main script                |
  * | `1`     | partial script             |
  * | `1`     | freeze                     |
+ * | `1`     | the backend                |
  * | `4`     | the number of scopes       |
  * | ...     | the scopes                 |
  *
@@ -179,6 +205,14 @@ void pm_options_cleanup(pm_options_t *options);
  * | `2`   | use the version of prism that is vendored in CRuby 3.4.0 |
  * | `3`   | use the version of prism that is vendored in CRuby 4.0.0 |
  * | `4`   | use the version of prism that is vendored in CRuby 4.1.0 |
+ *
+ * The backend field is an enum, so it should be one of the following values:
+ *
+ * | value | backend                   |
+ * | ----- | ------------------------- |
+ * | `0`   | use the default backend, honoring PRISM_PARSER_BACKEND |
+ * | `1`   | use the hand-written parser |
+ * | `2`   | use the parser generated from the fork of CRuby's parse.y |
  *
  * Each scope is laid out as follows:
  *

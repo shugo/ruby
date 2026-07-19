@@ -9,6 +9,8 @@ module Prism
     skips = %w[
       errors_test.rb
       locals_test.rb
+      parsey_equivalence_test.rb
+      parsey_errors_test.rb
       regexp_test.rb
       test_helper.rb
       unescape_test.rb

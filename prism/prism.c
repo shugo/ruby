@@ -20,6 +20,9 @@
 #include "prism/internal/node.h"
 #include "prism/internal/options.h"
 #include "prism/internal/parser.h"
+#ifndef PRISM_EXCLUDE_PARSEY
+#include "prism/internal/parsey.h"
+#endif
 #include "prism/internal/regexp.h"
 #include "prism/internal/serialize.h"
 #include "prism/internal/source.h"
@@ -12711,14 +12714,6 @@ match6(const pm_parser_t *parser, pm_token_type_t type1, pm_token_type_t type2, 
 }
 
 /**
- * Returns true if the current token is any of the seven given types.
- */
-static PRISM_INLINE bool
-match7(const pm_parser_t *parser, pm_token_type_t type1, pm_token_type_t type2, pm_token_type_t type3, pm_token_type_t type4, pm_token_type_t type5, pm_token_type_t type6, pm_token_type_t type7) {
-    return match1(parser, type1) || match1(parser, type2) || match1(parser, type3) || match1(parser, type4) || match1(parser, type5) || match1(parser, type6) || match1(parser, type7);
-}
-
-/**
  * Returns true if the current token is any of the eight given types.
  */
 static PRISM_INLINE bool
@@ -12928,6 +12923,31 @@ token_begins_expression_p(pm_token_type_t type) {
         default:
             return pm_binding_powers[type].left == PM_BINDING_POWER_UNSET;
     }
+}
+
+/**
+ * Returns true if the given token can begin a pattern element. This is the
+ * set of tokens that can begin an expression plus the tokens that begin
+ * pattern-only constructs — `*` (rest patterns), `**` (keyword rest
+ * patterns), and `^` (pin patterns) — which are binary operator tokens in
+ * expression contexts and therefore excluded from token_begins_expression_p.
+ *
+ * When a token fails this predicate at a decision point, the pattern ends
+ * there and the token is left for the enclosing context to accept or reject.
+ * This mirrors the grammar, whose pattern reductions (`p_top_expr_body:
+ * p_expr ','`, `p_kw: p_kw_label`, `p_kwargs: p_kwarg ','`) fire by default
+ * on any token that cannot start a pattern. Tokens that pass this predicate
+ * but are invalid in the specific context (e.g. `**` in an array pattern)
+ * are rejected by the pattern parser itself with a more targeted diagnostic.
+ */
+static PRISM_INLINE bool
+token_begins_pattern_p(pm_token_type_t type) {
+    return (
+        token_begins_expression_p(type) ||
+        type == PM_TOKEN_USTAR ||
+        type == PM_TOKEN_USTAR_STAR ||
+        type == PM_TOKEN_CARET
+    );
 }
 
 /**
@@ -17097,7 +17117,12 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
 
                 pm_node_t *value;
 
-                if (match8(parser, PM_TOKEN_COMMA, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_PARENTHESIS_RIGHT, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_TOKEN_EOF)) {
+                /*
+                 * The label has an implicit value when the next token cannot
+                 * begin a pattern, mirroring the grammar's `p_kw: p_kw_label`
+                 * reduction.
+                 */
+                if (!token_begins_pattern_p(parser->current.type)) {
                     if (PM_NODE_TYPE_P(first_node, PM_SYMBOL_NODE)) {
                         value = parse_pattern_hash_implicit_value(parser, captures, (pm_symbol_node_t *) first_node);
                     } else {
@@ -17132,8 +17157,12 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
 
     // If there are any other assocs, then we'll parse them now.
     while (accept1(parser, PM_TOKEN_COMMA)) {
-        // Here we need to break to support trailing commas.
-        if (match7(parser, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_PARENTHESIS_RIGHT, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_TOKEN_EOF)) {
+        /*
+         * A trailing comma ends the pattern when the next token cannot begin
+         * another element, mirroring the grammar's `p_kwargs: p_kwarg ','`
+         * reduction.
+         */
+        if (!token_begins_pattern_p(parser->current.type)) {
             // Trailing commas are not allowed to follow a rest pattern.
             if (rest != NULL) {
                 pm_parser_err_token(parser, &parser->current, PM_ERR_PATTERN_EXPRESSION_AFTER_REST);
@@ -17174,7 +17203,12 @@ parse_pattern_hash(pm_parser_t *parser, pm_constant_id_list_t *captures, pm_node
             parse_pattern_hash_key(parser, &keys, key);
             pm_node_t *value = NULL;
 
-            if (match8(parser, PM_TOKEN_COMMA, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_PARENTHESIS_RIGHT, PM_TOKEN_NEWLINE, PM_TOKEN_SEMICOLON, PM_TOKEN_EOF)) {
+            /*
+             * The label has an implicit value when the next token cannot
+             * begin a pattern, mirroring the grammar's `p_kw: p_kw_label`
+             * reduction.
+             */
+            if (!token_begins_pattern_p(parser->current.type)) {
                 if (PM_NODE_TYPE_P(key, PM_SYMBOL_NODE)) {
                     value = parse_pattern_hash_implicit_value(parser, captures, (pm_symbol_node_t *) key);
                 } else {
@@ -17674,15 +17708,12 @@ parse_pattern(pm_parser_t *parser, pm_constant_id_list_t *captures, uint8_t flag
 
         // Gather up all of the patterns into the list.
         while (accept1(parser, PM_TOKEN_COMMA)) {
-            // Break early here in case we have a trailing comma. The newline and
-            // EOF terminators cover a one-line match (`x => a,`) or a `case`/`in`
-            // clause (`in a,\n ...`); a newline is only lexed as a token here
-            // when `pattern_matching_newlines` is set, so this does not affect
-            // patterns nested in brackets or parentheses.
-            if (
-                match7(parser, PM_TOKEN_KEYWORD_THEN, PM_TOKEN_BRACE_RIGHT, PM_TOKEN_BRACKET_RIGHT, PM_TOKEN_PARENTHESIS_RIGHT, PM_TOKEN_SEMICOLON, PM_TOKEN_KEYWORD_AND, PM_TOKEN_KEYWORD_OR) ||
-                match2(parser, PM_TOKEN_NEWLINE, PM_TOKEN_EOF)
-            ) {
+            /*
+             * A trailing comma ends the pattern when the next token cannot
+             * begin another pattern element, leaving the token for the
+             * enclosing context to accept or reject.
+             */
+            if (!token_begins_pattern_p(parser->current.type)) {
                 // A trailing comma forms an implicit rest pattern (`[a,]` is
                 // `[a, *]`). If a rest pattern has already been parsed, then
                 // this is a second rest, which is not allowed (e.g. `[a, *b,]`
@@ -19787,6 +19818,18 @@ parse_expression_prefix(pm_parser_t *parser, pm_binding_power_t binding_power, u
                     parse_heredoc_dedent(parser, nodes, common_whitespace);
                 }
             }
+
+            /* If a missing terminator left this heredoc's lex mode on the
+             * stack, it still points at our stack-local common_whitespace.
+             * Clear the pointer so that subsequent lexing cannot read from
+             * this function's dead stack frame. */
+            pm_lex_mode_t *whitespace_mode = parser->lex_modes.current;
+            do {
+                if (whitespace_mode->mode == PM_LEX_HEREDOC && whitespace_mode->as.heredoc.common_whitespace == &common_whitespace) {
+                    whitespace_mode->as.heredoc.common_whitespace = NULL;
+                }
+                whitespace_mode = whitespace_mode->prev;
+            } while (whitespace_mode != NULL);
 
             if (match1(parser, PM_TOKEN_STRING_BEGIN)) {
                 return parse_strings(parser, node, false, (uint16_t) (depth + 1));
@@ -22757,6 +22800,23 @@ pm_parser_init_shebang(pm_parser_t *parser, const pm_options_t *options, const c
 }
 
 /**
+ * Determine which parser implementation to use when a parse did not request one
+ * explicitly. The PRISM_PARSER_BACKEND environment variable selects it; an
+ * unset or unrecognized value leaves the hand-written parser in place, since
+ * silently refusing to parse would be a worse failure than ignoring a typo.
+ */
+static pm_options_backend_t
+pm_parser_backend_default(void) {
+    const char *backend = getenv("PRISM_PARSER_BACKEND");
+    if (backend == NULL) return PM_OPTIONS_BACKEND_HANDWRITTEN;
+
+    pm_options_t options = { 0 };
+    if (pm_options_backend_set(&options, backend, strlen(backend))) return options.backend;
+
+    return PM_OPTIONS_BACKEND_HANDWRITTEN;
+}
+
+/**
  * Initialize a parser with the given start and end pointers.
  */
 void
@@ -22816,6 +22876,7 @@ pm_parser_init(pm_arena_t *arena, pm_parser_t *parser, const uint8_t *source, si
         .current_block_exits = NULL,
         .semantic_token_seen = false,
         .frozen_string_literal = PM_OPTIONS_FROZEN_STRING_LITERAL_UNSET,
+        .backend = PM_OPTIONS_BACKEND_HANDWRITTEN,
         .warn_mismatched_indentation = true
     };
 
@@ -22868,6 +22929,9 @@ pm_parser_init(pm_arena_t *arena, pm_parser_t *parser, const uint8_t *source, si
         // version option
         parser->version = options->version;
 
+        // backend option
+        parser->backend = options->backend;
+
         // partial_script
         parser->partial_script = options->partial_script;
 
@@ -22900,6 +22964,13 @@ pm_parser_init(pm_arena_t *arena, pm_parser_t *parser, const uint8_t *source, si
     // a version was given and parse as the latest version otherwise.
     if (parser->version == PM_OPTIONS_VERSION_UNSET) {
         parser->version = PM_OPTIONS_VERSION_LATEST;
+    }
+
+    // Similarly, if a backend was not requested for this parse, fall back to the
+    // process-wide default. Resolving this here rather than at each entry point
+    // means every caller honors it: the C API, both Ruby backends, and the CLI.
+    if (parser->backend == PM_OPTIONS_BACKEND_UNSET) {
+        parser->backend = pm_parser_backend_default();
     }
 
     pm_accepts_block_stack_push(parser, true);
@@ -23227,8 +23298,30 @@ pm_parse_continuable(pm_parser_t *parser) {
 /**
  * Parse the Ruby source associated with the given parser and return the tree.
  */
+bool
+pm_parsey_enabled(void) {
+#ifndef PRISM_EXCLUDE_PARSEY
+    return true;
+#else
+    return false;
+#endif
+}
+
 pm_node_t *
 pm_parse(pm_parser_t *parser) {
+    if (parser->backend == PM_OPTIONS_BACKEND_PARSE_Y) {
+#ifndef PRISM_EXCLUDE_PARSEY
+        return pm_yparse(parser);
+#else
+        /* Parse with the hand-written parser, but do not let the request
+         * silently succeed: the caller asked to verify against a parser that
+         * is not here. */
+        pm_diagnostic_list_append_format(
+            &parser->metadata_arena, &parser->error_list, 0, 0,
+            PM_ERR_PARSEY_SYNTAX, "the parse.y backend is not included in this build");
+#endif
+    }
+
     pm_node_t *node = parse_program(parser);
     pm_parse_continuable(parser);
     return node;

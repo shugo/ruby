@@ -837,6 +837,13 @@ struct pm_parser_t {
     /* The version of prism that we should use to parse. */
     pm_options_version_t version;
 
+    /*
+     * The parser implementation to use for this parse, resolved from the
+     * options and the environment by pm_parser_init and dispatched on by
+     * pm_parse. This is never PM_OPTIONS_BACKEND_UNSET.
+     */
+    pm_options_backend_t backend;
+
     /* The command line flags given from the options. */
     uint8_t command_line;
 

@@ -250,6 +250,24 @@ PRISM_EXPORTED_FUNCTION bool pm_options_freeze(const pm_options_t *options) PRIS
 PRISM_EXPORTED_FUNCTION void pm_options_freeze_set(pm_options_t *options, bool freeze) PRISM_NONNULL(1);
 
 /**
+ * Set the backend option on the given options struct by parsing the given
+ * string. This selects which of the parser implementations compiled into prism
+ * is used for the parse. If the string does not name a backend, this returns
+ * false. Otherwise, it returns true.
+ *
+ * The recognized backends are "prism", the hand-written recursive descent
+ * parser, and "parse_y", the parser generated from a fork of CRuby's parse.y
+ * grammar. When this is not set, the PRISM_PARSER_BACKEND environment variable
+ * is consulted, and "prism" is used if that is unset as well.
+ *
+ * @param options The options struct to set the backend on.
+ * @param backend The backend to set.
+ * @param length The length of the backend string.
+ * @returns Whether or not the backend was parsed successfully.
+ */
+PRISM_EXPORTED_FUNCTION bool pm_options_backend_set(pm_options_t *options, const char *backend, size_t length) PRISM_NONNULL(1);
+
+/**
  * Allocate and zero out the scopes array on the given options struct.
  *
  * @param options The options struct to initialize the scopes array on.
@@ -315,5 +333,14 @@ PRISM_EXPORTED_FUNCTION pm_string_t * pm_options_scope_local_mut(pm_options_scop
  * @param forwarding The forwarding value to set.
  */
 PRISM_EXPORTED_FUNCTION void pm_options_scope_forwarding_set(pm_options_scope_t *scope, uint8_t forwarding) PRISM_NONNULL(1);
+
+/**
+ * Query whether the parse.y backend is included in this build. Builds may
+ * exclude it (PRISM_EXCLUDE_PARSEY) to save the size of the generated parser;
+ * requesting the parse_y backend in such a build produces a parse error.
+ *
+ * @return true when pm_parse can dispatch to the parse.y backend.
+ */
+PRISM_EXPORTED_FUNCTION bool pm_parsey_enabled(void);
 
 #endif

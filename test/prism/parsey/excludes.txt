@@ -1,0 +1,6 @@
+# Fixtures the parse.y backend does not yet reproduce byte-identically.
+# This list is a ratchet: when an entry starts passing, the equivalence test
+# fails until it is removed here.
+#
+# Currently empty: all fixtures parse tree-identically to the hand-written
+# parser, warnings included.
