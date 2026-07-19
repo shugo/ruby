@@ -2108,7 +2108,9 @@ static void error_duplicate_pattern_key(struct parser_params *p, ID id, const YY
 static VALUE formal_argument_error(struct parser_params*, ID);
 static int pm_yid_bang_quest_p(struct parser_params *p, ID id);
 static int pm_yid_local_shape_p(struct parser_params *p, ID id);
-static int pm_yinvalid_local_write_check(struct parser_params *p, ID id, uint32_t beg);
+static int pm_yinvalid_local_check(struct parser_params *p, ID id, uint32_t beg, pm_diagnostic_id_t diag_id);
+#define pm_yinvalid_local_write_check(p, id, beg) \
+    pm_yinvalid_local_check(p, id, beg, PM_ERR_INVALID_LOCAL_VARIABLE_WRITE)
 static ID shadowing_lvar(struct parser_params*,ID);
 static void new_bv(struct parser_params*,ID);
 
@@ -5626,7 +5628,12 @@ p_var_ref	: '^' tIDENTIFIER
                             n = NEW_ERROR(&@$);
                         }
                         else if (!(PM_NODE_TYPE_P(n, PM_LOCAL_VARIABLE_READ_NODE) || PM_NODE_TYPE_P(n, PM_IT_LOCAL_VARIABLE_READ_NODE))) {
-                            compile_error(p, "no such local variable");
+                            /* the hand parser leads with the name */
+                            pm_diagnostic_list_append_format(
+                                &p->pm->metadata_arena, &p->pm->error_list,
+                                @2.beg, @2.end - @2.beg, PM_ERR_NO_LOCAL_VARIABLE,
+                                (int) (@2.end - @2.beg), (const char *) p->pm->start + @2.beg);
+                            p->error_p = 1;
                         }
                         $$ = pm_ypinned_var(p, n, &@1, &@$);
                     }
@@ -6445,6 +6452,8 @@ assoc		: arg_value tASSOC arg_value
                         if (PM_NODE_TYPE_P(val, PM_CALL_NODE)) {
                             val->flags &= (pm_node_flags_t) ~PM_CALL_NODE_FLAGS_VARIABLE_CALL;
                         }
+                        /* a ?- or !-suffixed label has nothing to read */
+                        pm_yinvalid_local_check(p, $1, (uint32_t) @1.beg, PM_ERR_INVALID_LOCAL_VARIABLE_READ);
                         /* the implicit node spans the whole label, colon
                          * included; the read inside spans the name */
                         val = (NODE *) pm_implicit_node_new(
@@ -8782,10 +8791,10 @@ pm_yid_bang_quest_p(struct parser_params *p, ID id)
     return last == '?' || last == '!';
 }
 
-/* The hand parser's wording for such a name in a binding position, at
- * [beg, name end); reports whether it fired. */
+/* The hand parser's wording for such a name in a binding or reading
+ * position, at [beg, name end); reports whether it fired. */
 static int
-pm_yinvalid_local_write_check(struct parser_params *p, ID id, uint32_t beg)
+pm_yinvalid_local_check(struct parser_params *p, ID id, uint32_t beg, pm_diagnostic_id_t diag_id)
 {
     if (!pm_yid_bang_quest_p(p, id)) return 0;
     pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
@@ -8793,7 +8802,7 @@ pm_yinvalid_local_write_check(struct parser_params *p, ID id, uint32_t beg)
     pm_diagnostic_list_append_format(
         &p->pm->metadata_arena, &p->pm->error_list,
         beg, (uint32_t) constant->length,
-        PM_ERR_INVALID_LOCAL_VARIABLE_WRITE,
+        diag_id,
         (int) constant->length, (const char *) constant->start);
     p->error_p = 1;
     return 1;
@@ -8959,7 +8968,10 @@ parser_set_frozen_string_literal(struct parser_params *p, const char *name, cons
     int b;
 
     if (p->token_seen) {
-        rb_warning1("'%s' is ignored after any tokens", WARN_S(name));
+        pm_location_t loc = pm_ymagic_comment_loc(p);
+        pm_diagnostic_list_append(
+            &p->pm->metadata_arena, &p->pm->warning_list, loc.start, loc.length,
+            PM_WARN_IGNORED_FROZEN_STRING_LITERAL);
         return;
     }
 
@@ -10040,7 +10052,16 @@ parse_ident(struct parser_params *p, int c, int cmd_state)
     if (peek_end_expect_token_locations(p)) {
         const end_expect_token_locations_t *open_loc = peek_end_expect_token_locations(p);
         long beg_pos = p->lex.ptok - p->lex.pbeg;
-        long column = (long) (open_loc->pos - open_loc->line_start);
+
+        /* compare against the opening line's indentation, not the keyword's
+         * own column: unlike upstream, expectations are pushed for `do` too,
+         * which sits mid-line where its column means nothing */
+        long column = 0;
+        {
+            const uint8_t *src = p->pm->start + open_loc->line_start;
+            const uint8_t *keyword = p->pm->start + open_loc->pos;
+            while (src < keyword && (*src == ' ' || *src == '\t')) { src++; column++; }
+        }
 
         /* an `end` on a later line, indented at or left of the opening
          * keyword, closes it even after a dot */
@@ -12554,6 +12575,8 @@ pm_yindex_call(struct parser_params *p, NODE *node, const YYLTYPE *opening, cons
         call->opening_loc = pm_yloc(opening);
         call->closing_loc = pm_yloc(closing);
         call->message_loc = (pm_location_t) { opening->beg, closing->end - opening->beg };
+        /* an index read takes a &block argument (self[&pr]) */
+        pm_yblock_pass_take(p, call);
     }
     return node;
 }
@@ -16812,6 +16835,56 @@ warn_duplicate_keys(struct parser_params *p, NODE *hash)
     return;
 }
 
+/* Walk a hash's elements adding the static-literal keys to the set, warning
+ * on duplicates like the hand parser's pm_hash_key_static_literals_add. A
+ * `**{...}` literal splat expands into the same set (the hand parser shares
+ * current_hash_keys with the inner hash); duplicates confined to `within`
+ * were already reported when that inner hash was built and stay quiet. */
+static void
+pm_yhash_dup_keys_check(struct parser_params *p, pm_static_literals_t *literals, pm_node_list_t *elements, const pm_node_t *within)
+{
+    for (size_t i = 0; i < elements->size; i++) {
+        pm_node_t *element = elements->nodes[i];
+        if (element == NULL) continue;
+
+        if (PM_NODE_TYPE_P(element, PM_ASSOC_SPLAT_NODE)) {
+            pm_node_t *value = ((pm_assoc_splat_node_t *) element)->value;
+            if (value != NULL && PM_NODE_TYPE_P(value, PM_HASH_NODE)) {
+                pm_yhash_dup_keys_check(p, literals, &((pm_hash_node_t *) value)->elements, within != NULL ? within : value);
+            }
+            else if (value != NULL && PM_NODE_TYPE_P(value, PM_KEYWORD_HASH_NODE)) {
+                pm_yhash_dup_keys_check(p, literals, &((pm_keyword_hash_node_t *) value)->elements, within != NULL ? within : value);
+            }
+            continue;
+        }
+
+        if (!PM_NODE_TYPE_P(element, PM_ASSOC_NODE)) continue;
+        pm_node_t *key = ((pm_assoc_node_t *) element)->key;
+        if (key == NULL) continue;
+
+        const pm_node_t *duplicated = pm_static_literals_add(
+            &p->pm->line_offsets, p->pm->start, p->pm->start_line, literals, key, true);
+        if (duplicated == NULL) continue;
+        if (within != NULL &&
+            duplicated->location.start >= within->location.start &&
+            duplicated->location.start + duplicated->location.length <= within->location.start + within->location.length) {
+            continue;
+        }
+
+        pm_buffer_t buffer = { 0 };
+        pm_static_literal_inspect(
+            &buffer, &p->pm->line_offsets, p->pm->start, p->pm->start_line,
+            p->pm->encoding->name, duplicated);
+        pm_diagnostic_list_append_format(
+            &p->pm->metadata_arena, &p->pm->warning_list,
+            duplicated->location.start, duplicated->location.length,
+            PM_WARN_DUPLICATED_HASH_KEY,
+            (int) pm_buffer_length(&buffer), pm_buffer_value(&buffer),
+            pm_line_offset_list_line_column(&p->pm->line_offsets, key->location.start, p->pm->start_line).line);
+        pm_buffer_cleanup(&buffer);
+    }
+}
+
 static NODE *
 new_hash(struct parser_params *p, NODE *hash, const YYLTYPE *loc)
 {
@@ -16843,27 +16916,7 @@ new_hash(struct parser_params *p, NODE *hash, const YYLTYPE *loc)
     /* the duplicated-key warning, anchored at the overwritten key, as the
      * hand parser's pm_hash_key_static_literals_add */
     pm_static_literals_t literals = { 0 };
-    for (size_t i = 0; i < elements.size; i++) {
-        pm_node_t *element = elements.nodes[i];
-        if (!PM_NODE_TYPE_P(element, PM_ASSOC_NODE)) continue;
-        pm_node_t *key = ((pm_assoc_node_t *) element)->key;
-        if (key == NULL) continue;
-        const pm_node_t *duplicated = pm_static_literals_add(
-            &p->pm->line_offsets, p->pm->start, p->pm->start_line, &literals, key, true);
-        if (duplicated != NULL) {
-            pm_buffer_t buffer = { 0 };
-            pm_static_literal_inspect(
-                &buffer, &p->pm->line_offsets, p->pm->start, p->pm->start_line,
-                p->pm->encoding->name, duplicated);
-            pm_diagnostic_list_append_format(
-                &p->pm->metadata_arena, &p->pm->warning_list,
-                duplicated->location.start, duplicated->location.length,
-                PM_WARN_DUPLICATED_HASH_KEY,
-                (int) pm_buffer_length(&buffer), pm_buffer_value(&buffer),
-                pm_line_offset_list_line_column(&p->pm->line_offsets, key->location.start, p->pm->start_line).line);
-            pm_buffer_cleanup(&buffer);
-        }
-    }
+    pm_yhash_dup_keys_check(p, &literals, &elements, NULL);
     pm_static_literals_free(&literals);
 
     return (NODE *) pm_keyword_hash_node_new(
