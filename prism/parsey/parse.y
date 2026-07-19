@@ -18056,7 +18056,7 @@ pm_yparse(pm_parser_t *pm)
     /* An unported construct (YSTUB) means some action could not build its
      * node and the tree may hold NULLs where required children belong: only
      * the guaranteed-consistent empty program is safe then. A plain syntax
-     * error keeps the partial tree — the grammar's error productions reduce
+     * error keeps the partial tree - the grammar's error productions reduce
      * the broken statement to an ErrorRecoveryNode and parsing continues. */
     NODE *result = p->eval_tree;
     if (result == NULL) result = p->ytop_progress;
