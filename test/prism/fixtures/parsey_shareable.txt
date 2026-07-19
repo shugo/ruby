@@ -1,0 +1,20 @@
+# shareable_constant_value: literal
+A = [1, {a: "b"}]
+B ||= [2]
+C &&= [3]
+D += 4
+E::F = 5
+::G = 6
+E::F ||= 7
+E::F += 8
+# shareable_constant_value: experimental_everything
+H = foo
+# shareable_constant_value: experimental_copy
+I = bar
+# shareable_constant_value: none
+J = [9]
+class K
+  # shareable_constant_value: literal
+  L = [10]
+end
+M = [11]

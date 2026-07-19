@@ -17668,10 +17668,24 @@ parser_get_bool(struct parser_params *p, const char *name, const char *val)
     return parser_invalid_pragma_value(p, name, val);
 }
 
+/* The span of the current line's comment, from its '#' through the newline,
+ * which is the token the hand parser anchors magic-comment warnings to. */
+static pm_location_t
+pm_ymagic_comment_loc(struct parser_params *p)
+{
+    const char *start = p->lex.pbeg;
+    while (start < p->lex.pend && *start != '#') start++;
+    return (pm_location_t) { YOFF(start), (uint32_t) (p->lex.pend - start) };
+}
+
 static int
 parser_invalid_pragma_value(struct parser_params *p, const char *name, const char *val)
 {
-    rb_warning2("invalid value for %s: %s", WARN_S(name), WARN_S(val));
+    pm_location_t loc = pm_ymagic_comment_loc(p);
+    pm_diagnostic_list_append_format(
+        &p->pm->metadata_arena, &p->pm->warning_list, loc.start, loc.length,
+        PM_WARN_INVALID_MAGIC_COMMENT_VALUE,
+        (int) strlen(name), name, (int) strlen(val), val);
     return -1;
 }
 
@@ -17704,7 +17718,10 @@ parser_set_shareable_constant_value(struct parser_params *p, const char *name, c
     for (const char *s = p->lex.pbeg, *e = p->lex.pcur; s < e; ++s) {
         if (*s == ' ' || *s == '\t') continue;
         if (*s == '#') break;
-        rb_warning1("'%s' is ignored unless in comment-only line", WARN_S(name));
+        pm_location_t loc = pm_ymagic_comment_loc(p);
+        pm_diagnostic_list_append(
+            &p->pm->metadata_arena, &p->pm->warning_list, loc.start, loc.length,
+            PM_WARN_SHAREABLE_CONSTANT_VALUE_LINE);
         return;
     }
 
@@ -24241,11 +24258,34 @@ mark_assignment_value_lvars(struct parser_params *p, NODE *node)
     }
 }
 
+/* Wrap a constant write in a ShareableConstantNode when the
+ * shareable_constant_value pragma is active, as the hand parser does; the
+ * shareability semantics live in the compiler. */
+static NODE *
+pm_yshareable_wrap(struct parser_params *p, NODE *write, struct lex_context ctxt)
+{
+    pm_node_flags_t flags;
+    switch (ctxt.shareable_constant_value) {
+      case rb_parser_shareable_literal:
+        flags = PM_SHAREABLE_CONSTANT_NODE_FLAGS_LITERAL;
+        break;
+      case rb_parser_shareable_everything:
+        flags = PM_SHAREABLE_CONSTANT_NODE_FLAGS_EXPERIMENTAL_EVERYTHING;
+        break;
+      case rb_parser_shareable_copy:
+        flags = PM_SHAREABLE_CONSTANT_NODE_FLAGS_EXPERIMENTAL_COPY;
+        break;
+      default:
+        return write;
+    }
+    return (NODE *) pm_shareable_constant_node_new(
+        p->pm->arena, ++p->pm->node_id, flags, write->location, write);
+}
+
 static NODE *
 node_assign(struct parser_params *p, NODE *lhs, NODE *rhs, struct lex_context ctxt, const YYLTYPE *loc)
 {
     if (!lhs) return 0;
-    (void) ctxt;
 
     /*
      * The operator's own location: CRuby's nodes never store it, so the rules
@@ -24290,10 +24330,13 @@ node_assign(struct parser_params *p, NODE *lhs, NODE *rhs, struct lex_context ct
         goto assign;
       case PM_CONSTANT_WRITE_NODE:
         ((pm_constant_write_node_t *) lhs)->operator_loc = operator_loc;
-        goto assign;
+        goto assign_constant;
       case PM_CONSTANT_PATH_WRITE_NODE:
         ((pm_constant_path_write_node_t *) lhs)->operator_loc = operator_loc;
-        goto assign;
+      assign_constant:
+        set_nd_value(p, lhs, rhs);
+        lhs->location = pm_yloc(loc);
+        return pm_yshareable_wrap(p, lhs, ctxt);
       case PM_MULTI_TARGET_NODE: {
         pm_multi_target_node_t *target = (pm_multi_target_node_t *) lhs;
         return (NODE *) pm_multi_write_node_new(
@@ -25444,7 +25487,6 @@ new_unique_key_hash(struct parser_params *p, NODE *hash, const YYLTYPE *loc)
 static NODE *
 new_op_assign(struct parser_params *p, NODE *lhs, ID op, NODE *rhs, struct lex_context ctxt, const YYLTYPE *op_loc, const YYLTYPE *loc)
 {
-    (void) ctxt;
     if (lhs == NULL) return NULL;
 
     pm_location_t location = pm_yloc(loc);
@@ -25484,7 +25526,7 @@ new_op_assign(struct parser_params *p, NODE *lhs, ID op, NODE *rhs, struct lex_c
       }
       case PM_CONSTANT_WRITE_NODE: {
         pm_constant_write_node_t *write = (pm_constant_write_node_t *) lhs;
-        return YOPW(pm_constant, write->name, write->name_loc, );
+        return pm_yshareable_wrap(p, YOPW(pm_constant, write->name, write->name_loc, ), ctxt);
       }
       default:
         YSTUB("new_op_assign");
@@ -25551,7 +25593,6 @@ new_attr_op_assign(struct parser_params *p, NODE *lhs,
 static NODE *
 new_const_op_assign(struct parser_params *p, NODE *lhs, ID op, NODE *rhs, struct lex_context ctxt, const YYLTYPE *loc)
 {
-    (void) ctxt;
     pm_location_t location = pm_yloc(loc);
 
     if (lhs == NULL || !PM_NODE_TYPE_P(lhs, PM_CONSTANT_PATH_NODE)) {
@@ -25578,13 +25619,17 @@ new_const_op_assign(struct parser_params *p, NODE *lhs, ID op, NODE *rhs, struct
     }
 
     pm_constant_path_node_t *target = (pm_constant_path_node_t *) lhs;
+    NODE *write;
     if (op == idOROP) {
-        return (NODE *) pm_constant_path_or_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs);
+        write = (NODE *) pm_constant_path_or_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs);
     }
-    if (op == idANDOP) {
-        return (NODE *) pm_constant_path_and_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs);
+    else if (op == idANDOP) {
+        write = (NODE *) pm_constant_path_and_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs);
     }
-    return (NODE *) pm_constant_path_operator_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs, YID2CONST(op));
+    else {
+        write = (NODE *) pm_constant_path_operator_write_node_new(p->pm->arena, ++p->pm->node_id, 0, location, target, operator, rhs, YID2CONST(op));
+    }
+    return pm_yshareable_wrap(p, write, ctxt);
 }
 
 static NODE *
