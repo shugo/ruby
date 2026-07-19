@@ -570,9 +570,14 @@ nd_unset_fl_newline(NODE *n)
 #define rb_memcicmp(a, b, n) pm_y_strncasecmp((const char *) (a), (const char *) (b), (size_t) (n))
 
 /* Symbol-name classification: the callers only ask "would this spelling be a
- * valid symbol of this kind"; the lexer has already vetted the characters, so
- * agreeing is correct until dsym validation is ported. */
-#define rb_enc_symname_type(name, len, enc, allowed) ((void) (name), (void) (len), pm_y_ctz(allowed))
+ * valid symbol of this kind", and the lexer has already vetted the characters
+ * except for one hole it leaves to this check: a global variable name that
+ * continues past a leading digit ($00, $0a) is invalid ($0 alone is the
+ * program name; $1 and friends never come through here). */
+#define rb_enc_symname_type(name, len, enc, allowed) \
+    ((void) (enc), \
+     ((len) > 2 && ((const char *) (name))[0] == '$' && ISDIGIT(((const char *) (name))[1])) \
+        ? -1 : pm_y_ctz(allowed))
 static inline int
 pm_y_ctz(unsigned int bits)
 {
@@ -1082,6 +1087,11 @@ struct parser_params {
      * circular-argument-reference error of versions up to 3.3. */
     ID ycur_arg;
     unsigned int ycur_arg_used:1;
+
+    /* fork: the span of the last noname token (an invalid $/@ name the lexer
+     * already diagnosed); assignable() must not cascade onto the nil it
+     * carries. */
+    pm_yloc_t ynoname_loc;
 
     /* fork: the non-associative binary expression that reduced last, for
      * rewriting the syntax error its continuation produces the way the hand
@@ -2100,6 +2110,7 @@ static void arg_var(struct parser_params*, ID);
 static int  local_id(struct parser_params *p, ID id);
 static int  local_id_ref(struct parser_params*, ID, ID **);
 static void pm_yerror_replace_last(struct parser_params *p, pm_diagnostic_id_t diag_id);
+static void pm_yerror_replace_last_bare(struct parser_params *p, pm_diagnostic_id_t diag_id);
 #define internal_id rb_parser_internal_id
 static ID internal_id(struct parser_params*);
 static NODE *new_args_forward_call(struct parser_params*, NODE*, const YYLTYPE*, const YYLTYPE*);
@@ -4291,8 +4302,14 @@ primary		: inline_primary
                 }
             | tLBRACE assoc_list[list] error
                 {
-                    /* fork: unclosed hash literal; keep the pairs */
-                    pm_yerror_replace_last(p, PM_ERR_HASH_TERM);
+                    /* fork: unclosed hash literal; keep the pairs. A real
+                     * offending token gets the hand parser's key wording. */
+                    if (strcmp(p->ylast_unexpected, "end-of-input") == 0) {
+                        pm_yerror_replace_last(p, PM_ERR_HASH_TERM);
+                    }
+                    else {
+                        pm_yerror_replace_last_bare(p, PM_ERR_HASH_KEY);
+                    }
                     $$ = new_hash(p, $list, &@$);
                     $$ = pm_yhash_braces(p, $$, &@1, &NULL_LOC, &@$);
                 }
@@ -6505,7 +6522,8 @@ do { \
 }
 # define yylval_id() (yylval.id)
 
-#define set_yylval_noname() set_yylval_id(keyword_nil)
+#define set_yylval_noname() \
+    (rb_parser_set_location(p, &p->ynoname_loc), set_yylval_id(keyword_nil))
 #define has_delayed_token(p) (p->delayed.active)
 
 #define literal_flush(p, ptr) ((p)->lex.ptok = (ptr))
@@ -11258,7 +11276,8 @@ pm_yarray_finalize(struct parser_params *p, NODE *node)
             is_static = false;
         }
         else if (!PM_NODE_FLAG_P(element, PM_NODE_FLAG_STATIC_LITERAL) ||
-                 PM_NODE_TYPE_P(element, PM_ARRAY_NODE) || PM_NODE_TYPE_P(element, PM_HASH_NODE)) {
+                 PM_NODE_TYPE_P(element, PM_ARRAY_NODE) || PM_NODE_TYPE_P(element, PM_HASH_NODE) ||
+                 PM_NODE_TYPE_P(element, PM_RANGE_NODE)) {
             is_static = false;
         }
     }
@@ -11874,7 +11893,8 @@ pm_yassoc(struct parser_params *p, NODE *key, NODE *value, const YYLTYPE *operat
     if (key != NULL && value != NULL &&
         PM_NODE_FLAG_P(key, PM_NODE_FLAG_STATIC_LITERAL) &&
         PM_NODE_FLAG_P(value, PM_NODE_FLAG_STATIC_LITERAL) &&
-        !PM_NODE_TYPE_P(value, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(value, PM_HASH_NODE)) {
+        !PM_NODE_TYPE_P(key, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(key, PM_HASH_NODE) && !PM_NODE_TYPE_P(key, PM_RANGE_NODE) &&
+        !PM_NODE_TYPE_P(value, PM_ARRAY_NODE) && !PM_NODE_TYPE_P(value, PM_HASH_NODE) && !PM_NODE_TYPE_P(value, PM_RANGE_NODE)) {
         flags = PM_NODE_FLAG_STATIC_LITERAL;
     }
 
@@ -12202,9 +12222,11 @@ pm_yarray_brackets(struct parser_params *p, NODE *node, const YYLTYPE *opening, 
         if (PM_NODE_TYPE_P(element, PM_SPLAT_NODE)) {
             array->base.flags |= PM_ARRAY_NODE_FLAGS_CONTAINS_SPLAT;
         }
-        /* Containers do not count as static elements, matching prism. */
+        /* Containers and ranges do not count as static elements, matching
+         * prism. */
         if (!PM_NODE_FLAG_P(element, PM_NODE_FLAG_STATIC_LITERAL) ||
-            PM_NODE_TYPE_P(element, PM_ARRAY_NODE) || PM_NODE_TYPE_P(element, PM_HASH_NODE)) {
+            PM_NODE_TYPE_P(element, PM_ARRAY_NODE) || PM_NODE_TYPE_P(element, PM_HASH_NODE) ||
+            PM_NODE_TYPE_P(element, PM_RANGE_NODE)) {
             is_static = false;
         }
     }
@@ -13804,7 +13826,14 @@ rb_node_file_new(struct parser_params *p, VALUE str, const YYLTYPE *loc)
 {
     pm_string_t filepath;
     pm_string_constant_init(&filepath, (const char *) pm_string_source(&p->pm->filepath), pm_string_length(&p->pm->filepath));
-    return (rb_node_file_t *) pm_source_file_node_new(p->pm->arena, ++p->pm->node_id, 0, pm_yloc(loc), filepath);
+
+    /* p->frozen_string_literal carries the magic comment on top of the
+     * command-line option (-1 unset / 0 false / 1 true) */
+    pm_node_flags_t flags = 0;
+    if (p->frozen_string_literal == 1) flags |= PM_NODE_FLAG_STATIC_LITERAL | PM_STRING_FLAGS_FROZEN;
+    else if (p->frozen_string_literal == 0) flags |= PM_STRING_FLAGS_MUTABLE;
+
+    return (rb_node_file_t *) pm_source_file_node_new(p->pm->arena, ++p->pm->node_id, flags, pm_yloc(loc), filepath);
 }
 
 static rb_node_encoding_t *
@@ -14369,6 +14398,18 @@ pm_ymatch_capture(pm_parser_t *parser, const pm_string_t *capture, bool shared, 
     }
 }
 
+/* Extract capture names without reporting syntax errors a second time: the
+ * literal already carries them, and this re-parse runs over the unescaped
+ * buffer, whose offsets are meaningless as source locations. */
+static void
+pm_ymatch_named_captures(struct parser_params *p, const uint8_t *content, size_t length, bool extended, pm_regexp_name_data_t *data)
+{
+    pm_list_t saved = p->pm->error_list;
+    pm_regexp_parse_named_captures(p->pm, content, length, false, extended, pm_ymatch_capture, data);
+    if (saved.tail != NULL) saved.tail->next = NULL;
+    p->pm->error_list = saved;
+}
+
 static NODE*
 match_op(struct parser_params *p, NODE *node1, NODE *node2, const YYLTYPE *op_loc, const YYLTYPE *loc)
 {
@@ -14383,10 +14424,10 @@ match_op(struct parser_params *p, NODE *node1, NODE *node2, const YYLTYPE *op_lo
         data.content_loc = regexp->content_loc;
         data.receiver_loc = regexp->base.location;
 
-        pm_regexp_parse_named_captures(
-            p->pm, data.content, data.content_length, false,
+        pm_ymatch_named_captures(
+            p, data.content, data.content_length,
             PM_NODE_FLAG_P(node1, PM_REGULAR_EXPRESSION_FLAGS_EXTENDED),
-            pm_ymatch_capture, &data.base);
+            &data.base);
 
         if (data.targets.size > 0) {
             return (NODE *) pm_match_write_node_new(
@@ -14427,10 +14468,10 @@ match_op(struct parser_params *p, NODE *node1, NODE *node2, const YYLTYPE *op_lo
             data.content_loc = (pm_location_t) { 0 };
             data.receiver_loc = node1->location;
 
-            pm_regexp_parse_named_captures(
-                p->pm, data.content, data.content_length, false,
+            pm_ymatch_named_captures(
+                p, data.content, data.content_length,
                 PM_NODE_FLAG_P(node1, PM_REGULAR_EXPRESSION_FLAGS_EXTENDED),
-                pm_ymatch_capture, &data.base);
+                &data.base);
 
             if (data.targets.size > 0) {
                 return (NODE *) pm_match_write_node_new(
@@ -14970,7 +15011,11 @@ assignable(struct parser_params *p, ID id, NODE *val, const YYLTYPE *loc)
       case NODE_CDECL: return NEW_CDECL(id, val, 0, p->ctxt.shareable_constant_value, loc);
       case NODE_CVASGN: return NEW_CVASGN(id, val, loc);
     }
-    if (err) yyerror1(loc, err);
+    /* a noname token was already diagnosed by the lexer; the nil it carries
+     * must not add a cascade */
+    if (err && !(loc->beg == p->ynoname_loc.beg && loc->end == p->ynoname_loc.end)) {
+        yyerror1(loc, err);
+    }
     return NEW_ERROR(loc);
 }
 
@@ -16902,7 +16947,9 @@ new_args_forward_call(struct parser_params *p, NODE *leading, const YYLTYPE *loc
     NODE *dots = (NODE *) pm_forwarding_arguments_node_new(
         p->pm->arena, ++p->pm->node_id, 0, pm_yloc(loc));
     (void) argsloc;
-    if (leading != NULL) return list_append(p, leading, dots);
+    /* a sole leading splat is a bare SplatNode; arg_append grows it into a
+     * carrier */
+    if (leading != NULL) return arg_append(p, leading, dots, loc);
     return NEW_LIST(dots, loc);
 }
 
@@ -17709,6 +17756,20 @@ pm_yerror_replace_last(struct parser_params *p, pm_diagnostic_id_t diag_id)
         diag->location.start, diag->location.length,
         diag_id, p->ylast_unexpected);
     p->ylast_syntax_diag = NULL;
+}
+
+/* Like pm_yerror_replace_last, with the token spelling unquoted, the way the
+ * hand parser prints it in the hash-key wording. */
+static void
+pm_yerror_replace_last_bare(struct parser_params *p, pm_diagnostic_id_t diag_id)
+{
+    char *token = p->ylast_unexpected;
+    size_t length = strlen(token);
+    if (length >= 2 && token[0] == '\'' && token[length - 1] == '\'') {
+        memmove(token, token + 1, length - 2);
+        token[length - 2] = '\0';
+    }
+    pm_yerror_replace_last(p, diag_id);
 }
 
 static int
