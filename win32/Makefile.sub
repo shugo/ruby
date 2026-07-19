@@ -166,6 +166,7 @@ XCFLAGS = $(XCFLAGS) -Dmodular_gc_dir="$(modular_gc_dir)"
 !endif
 # The parse.y backend of prism is opt-in; see --enable-prism-parsey in
 # configure.ac.  Build with USE_PRISM_PARSEY=1 to include it.
+XCFLAGS = $(XCFLAGS) -DPRISM_PARSEY_INTERPRETER_DEFAULT
 !if "$(USE_PRISM_PARSEY)" == "1"
 PRISM_PARSEY_OBJS = prism/parsey/parse.$(OBJEXT) prism/parsey/yid.$(OBJEXT) prism/parsey/ystring.$(OBJEXT)
 !else

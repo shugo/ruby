@@ -4708,6 +4708,9 @@ AC_SUBST(PRISM_PARSEY_OBJS)
 
 # Use the ruby allocator for prism. See prism/defines.h
 RUBY_APPEND_OPTIONS(XCFLAGS, -DPRISM_XALLOCATOR)
+# This interpreter selects prism's backend with --parser and provides
+# rb_ruby_prism_parsey_p for backend-unset Ruby-level parses.
+RUBY_APPEND_OPTIONS(XCFLAGS, -DPRISM_PARSEY_INTERPRETER_DEFAULT)
 
 arch_hdrdir="${EXTOUT}/include/${arch}/ruby"
 AS_MKDIR_P("${arch_hdrdir}")
