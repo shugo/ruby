@@ -2106,6 +2106,9 @@ static void flush_string_content(struct parser_params *p, rb_encoding *enc, size
 static void error_duplicate_pattern_variable(struct parser_params *p, ID id, const YYLTYPE *loc);
 static void error_duplicate_pattern_key(struct parser_params *p, ID id, const YYLTYPE *loc);
 static VALUE formal_argument_error(struct parser_params*, ID);
+static int pm_yid_bang_quest_p(struct parser_params *p, ID id);
+static int pm_yid_local_shape_p(struct parser_params *p, ID id);
+static int pm_yinvalid_local_write_check(struct parser_params *p, ID id, uint32_t beg);
 static ID shadowing_lvar(struct parser_params*,ID);
 static void new_bv(struct parser_params*,ID);
 
@@ -3160,7 +3163,10 @@ allow_exits	: {$$ = allow_block_exit(p);};
 k_END		: keyword_END lex_ctxt
                     {
                         if (p->ctxt.in_def) {
-                            rb_warn0("END in method; use at_exit");
+                            pm_diagnostic_list_append(
+                                &p->pm->metadata_arena, &p->pm->warning_list,
+                                @keyword_END.beg, @keyword_END.end - @keyword_END.beg,
+                                PM_WARN_END_IN_METHOD);
                         }
                         $$ = $2;
                         p->ctxt.in_rescue = before_rescue;
@@ -5513,6 +5519,16 @@ p_kw		: p_kw_label p_expr
                         if ($1 && !is_local_id($1)) {
                             yyerror1(&@1, "key must be valid as local variables");
                         }
+                        else if ($1 && pm_yid_bang_quest_p(p, $1)) {
+                            /* a ?- or !-suffixed name is no valid key either;
+                             * the hand parser reports both */
+                            yyerror1(&@1, "key must be valid as local variables");
+                            pm_yinvalid_local_write_check(p, $1, (uint32_t) @1.beg);
+                        }
+                        else if ($1 && !pm_yid_local_shape_p(p, $1)) {
+                            /* a quoted key must spell a local variable name */
+                            yyerror1(&@1, "key must be valid as local variables");
+                        }
                         error_duplicate_pattern_variable(p, $1, &@1);
                         {
                             /* the implicit value binds the label's name; a
@@ -6682,6 +6698,12 @@ token_info_setup(struct parser_params *p, token_info *ptinfo, const rb_code_loca
     uint32_t line_start = loc->beg;
     while (line_start > 0 && source[line_start - 1] != '\n') line_start--;
 
+    /* the BOM is not part of the first line's indentation */
+    if (line_start == 0 && loc->beg >= 3 && (uint32_t) (p->pm->end - p->pm->start) >= 3 &&
+        (unsigned char) source[0] == 0xef && (unsigned char) source[1] == 0xbb && (unsigned char) source[2] == 0xbf) {
+        line_start = 3;
+    }
+
     int column = 1, nonspc = 0;
     for (uint32_t i = line_start; i < loc->beg; i++) {
         if (source[i] == '\t') {
@@ -7603,18 +7625,22 @@ tokadd_escape(struct parser_params *p)
       case '0': case '1': case '2': case '3': /* octal constant */
       case '4': case '5': case '6': case '7':
         {
-            ruby_scan_oct(--p->lex.pcur, 3, &numlen);
+            unsigned long value = ruby_scan_oct(--p->lex.pcur, 3, &numlen);
             if (numlen == 0) goto eof;
             p->lex.pcur += numlen;
             tokcopy(p, (int)numlen + 1);
+            /* the escape stays textual in a regexp, but a byte past 0x7f
+             * still forces it off US-ASCII */
+            if (value >= 0x80) p->yexplicit_enc = rb_ascii8bit_encoding();
         }
         return 0;
 
       case 'x':	/* hex constant */
         {
-            tok_hex(p, &numlen);
+            unsigned long value = tok_hex(p, &numlen);
             if (numlen == 0) return -1;
             tokcopy(p, (int)numlen + 2);
+            if (value >= 0x80) p->yexplicit_enc = rb_ascii8bit_encoding();
         }
         return 0;
 
@@ -8726,6 +8752,53 @@ arg_ambiguous(struct parser_params *p, char c)
     return TRUE;
 }
 
+/* Whether the name has the shape of a local variable, as a quoted pattern
+ * key must (the lexer never vets those). */
+static int
+pm_yid_local_shape_p(struct parser_params *p, ID id)
+{
+    pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
+    if (constant_id == PM_CONSTANT_ID_UNSET) return 0;
+    pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
+    if (constant->length == 0) return 0;
+    if (constant->start[0] >= '0' && constant->start[0] <= '9') return 0;
+    for (size_t i = 0; i < constant->length; i++) {
+        uint8_t ch = constant->start[i];
+        if (!(ISALNUM(ch) || ch == '_' || ch >= 0x80)) return 0;
+    }
+    return 1;
+}
+
+/* Whether a local-classified name ends in ? or !, which the yid shim lets
+ * through but no binding position accepts. */
+static int
+pm_yid_bang_quest_p(struct parser_params *p, ID id)
+{
+    pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
+    if (constant_id == PM_CONSTANT_ID_UNSET) return 0;
+    pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
+    if (constant->length == 0) return 0;
+    uint8_t last = constant->start[constant->length - 1];
+    return last == '?' || last == '!';
+}
+
+/* The hand parser's wording for such a name in a binding position, at
+ * [beg, name end); reports whether it fired. */
+static int
+pm_yinvalid_local_write_check(struct parser_params *p, ID id, uint32_t beg)
+{
+    if (!pm_yid_bang_quest_p(p, id)) return 0;
+    pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
+    pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
+    pm_diagnostic_list_append_format(
+        &p->pm->metadata_arena, &p->pm->error_list,
+        beg, (uint32_t) constant->length,
+        PM_ERR_INVALID_LOCAL_VARIABLE_WRITE,
+        (int) constant->length, (const char *) constant->start);
+    p->error_p = 1;
+    return 1;
+}
+
 /* returns true value if formal argument error;
  * Qtrue, or error message if ripper */
 static VALUE
@@ -8733,21 +8806,8 @@ formal_argument_error(struct parser_params *p, ID id)
 {
     switch (id_type(id)) {
       case ID_LOCAL: {
-        /* the yid shim classifies ?- and !-suffixed names as locals; as a
-         * parameter name they get the hand parser's wording */
-        pm_constant_id_t constant_id = pm_yid_to_constant(&p->pm->metadata_arena, &p->pm->constant_pool, id);
-        if (constant_id != PM_CONSTANT_ID_UNSET) {
-            pm_constant_t *constant = pm_constant_pool_id_to_constant(&p->pm->constant_pool, constant_id);
-            if (constant->length > 0 &&
-                (constant->start[constant->length - 1] == '?' || constant->start[constant->length - 1] == '!')) {
-                pm_diagnostic_list_append_format(
-                    &p->pm->metadata_arena, &p->pm->error_list,
-                    p->ylvar_beg, (uint32_t) constant->length,
-                    PM_ERR_INVALID_LOCAL_VARIABLE_WRITE,
-                    (int) constant->length, (const char *) constant->start);
-                p->error_p = 1;
-                return Qtrue;
-            }
+        if (pm_yinvalid_local_write_check(p, id, p->ylvar_beg)) {
+            return Qtrue;
         }
         break;
       }
@@ -10788,6 +10848,10 @@ parser_yylex(struct parser_params *p)
         if (was_bol(p) && whole_match_p(p, "__END__", 7, 0)) {
             p->ruby__end__seen = 1;
             p->eofp = 1;
+            /* the DATA constant reads from here; the hand parser spans the
+             * marker through the end of file */
+            p->pm->data_loc.start = YOFF(p->lex.pbeg);
+            p->pm->data_loc.length = (uint32_t) (p->pm->end - p->pm->start) - p->pm->data_loc.start;
             return END_OF_INPUT;
         }
         newtok(p);
@@ -14823,9 +14887,13 @@ new_defined(struct parser_params *p, NODE *expr, const YYLTYPE *loc, const YYLTY
     pm_location_t lparen = { 0 };
     pm_location_t rparen = { 0 };
 
-    /* defined? (x) without its own parentheses adopts a parenthesized single
-     * expression's parens as the node's lparen/rparen. */
-    if (unwrap_parens && expr != NULL && PM_NODE_TYPE_P(expr, PM_PARENTHESES_NODE)) {
+    /* defined?(x) adopts a parenthesized single expression's parens as the
+     * node's lparen/rparen -- unless inline whitespace separates the keyword
+     * from the parenthesis (defined? (x) keeps the ParenthesesNode; a
+     * newline does not count), as the hand parser lexes it. */
+    if (unwrap_parens && expr != NULL && PM_NODE_TYPE_P(expr, PM_PARENTHESES_NODE) &&
+        (expr->location.start == 0 ||
+         (p->pm->start[expr->location.start - 1] != ' ' && p->pm->start[expr->location.start - 1] != '\t'))) {
         pm_parentheses_node_t *parens = (pm_parentheses_node_t *) expr;
         if (parens->body != NULL && PM_NODE_TYPE_P(parens->body, PM_STATEMENTS_NODE)) {
             pm_statements_node_t *statements = (pm_statements_node_t *) parens->body;
@@ -15024,6 +15092,16 @@ new_regexp(struct parser_params *p, NODE *node, int options, const YYLTYPE *loc,
             }
         }
         if (is_static) flags |= PM_NODE_FLAG_STATIC_LITERAL;
+
+        /* the hand parser's "extremely strange" rule: in a US-ASCII file the
+         * leading string part of an interpolated regexp is always tagged as
+         * binary, no matter its contents */
+        if (parts.size > 0 && parts.nodes[0] != NULL &&
+            PM_NODE_TYPE_P(parts.nodes[0], PM_STRING_NODE) &&
+            rb_is_usascii_enc((void *) p->enc)) {
+            parts.nodes[0]->flags |= PM_STRING_FLAGS_FORCED_BINARY_ENCODING;
+        }
+
         return (NODE *) pm_interpolated_regular_expression_node_new(
             p->pm->arena, ++p->pm->node_id, flags, pm_yloc(loc),
             opening, parts, closing);
@@ -16907,21 +16985,23 @@ new_ary_op_assign(struct parser_params *p, NODE *ary,
     pm_location_t location = pm_yloc(loc);
     pm_location_t operator = pm_yloc(binary_operator_loc);
     pm_arguments_node_t *arguments = pm_yargs_from_list(p, args);
+    pm_node_flags_t index_flags = 0;
+    if (ary != NULL && PM_NODE_TYPE_P(ary, PM_SELF_NODE)) index_flags |= PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY;
     (void) args_loc;
     (void) call_operator_loc;
 
     if (op == idOROP) {
         return (NODE *) pm_index_or_write_node_new(
-            p->pm->arena, ++p->pm->node_id, 0, location, ary, (pm_location_t) { 0 },
+            p->pm->arena, ++p->pm->node_id, index_flags, location, ary, (pm_location_t) { 0 },
             pm_yloc(opening_loc), arguments, pm_yloc(closing_loc), NULL, operator, rhs);
     }
     if (op == idANDOP) {
         return (NODE *) pm_index_and_write_node_new(
-            p->pm->arena, ++p->pm->node_id, 0, location, ary, (pm_location_t) { 0 },
+            p->pm->arena, ++p->pm->node_id, index_flags, location, ary, (pm_location_t) { 0 },
             pm_yloc(opening_loc), arguments, pm_yloc(closing_loc), NULL, operator, rhs);
     }
     return (NODE *) pm_index_operator_write_node_new(
-        p->pm->arena, ++p->pm->node_id, 0, location, ary, (pm_location_t) { 0 },
+        p->pm->arena, ++p->pm->node_id, index_flags, location, ary, (pm_location_t) { 0 },
         pm_yloc(opening_loc), arguments, pm_yloc(closing_loc), NULL,
         YID2CONST(op), operator, rhs);
 }
@@ -16938,6 +17018,7 @@ new_attr_op_assign(struct parser_params *p, NODE *lhs,
     pm_constant_id_t read_name = YID2CONST(attr);
     pm_constant_id_t write_name = YID2CONST(pm_yid_attrset(&p->pm->metadata_arena, &p->pm->constant_pool, attr));
     pm_node_flags_t flags = CALL_Q_P(atype) ? PM_CALL_NODE_FLAGS_SAFE_NAVIGATION : 0;
+    if (lhs != NULL && PM_NODE_TYPE_P(lhs, PM_SELF_NODE)) flags |= PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY;
 
     if (op == idOROP) {
         return (NODE *) pm_call_or_write_node_new(
@@ -17531,11 +17612,130 @@ reg_compile(struct parser_params* p, rb_parser_string_t *str, int options)
 }
 
 
+/* Intern a static C string in the constant pool. */
+static pm_constant_id_t
+pm_yconst_cstr(struct parser_params *p, const char *name)
+{
+    const uint8_t *bytes = (const uint8_t *) name;
+    size_t length = strlen(name);
+    pm_constant_id_t id = pm_constant_pool_find(&p->pm->constant_pool, bytes, length);
+    if (id == PM_CONSTANT_ID_UNSET) {
+        id = pm_constant_pool_insert_constant(&p->pm->metadata_arena, &p->pm->constant_pool, bytes, length);
+    }
+    return id;
+}
+
+/* The ruby -p / -n / -a / -l rewrite over the top-level statements, with the
+ * node shapes of the hand parser's wrap_statements (synthesized nodes carry
+ * empty locations; the split call spans the whole source). */
 static NODE *
 parser_append_options(struct parser_params *p, NODE *node)
 {
-    YSTUB("parser_append_options");
-    return NULL;
+    pm_parser_t *pm = p->pm;
+
+    if (!p->do_print && !p->do_loop) return node;
+
+    pm_statements_node_t *statements;
+    if (node != NULL && PM_NODE_TYPE_P(node, PM_STATEMENTS_NODE)) {
+        statements = (pm_statements_node_t *) node;
+    }
+    else if (node == NULL) {
+        statements = pm_statements_node_new(pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, (pm_node_list_t) { 0 });
+    }
+    else {
+        return node;
+    }
+
+    if (p->do_print) {
+        pm_node_list_t args = { 0 };
+        pm_node_list_append(pm->arena, &args, (pm_node_t *) pm_global_variable_read_node_new(
+            pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, pm_yconst_cstr(p, "$_")));
+        pm_arguments_node_t *arguments = pm_arguments_node_new(
+            pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, args);
+        pm_node_t *print = (pm_node_t *) pm_call_node_new(
+            pm->arena, ++pm->node_id, PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY | PM_NODE_FLAG_NEWLINE,
+            (pm_location_t) { 0 }, NULL, (pm_location_t) { 0 }, pm_yconst_cstr(p, "print"),
+            (pm_location_t) { 0 }, (pm_location_t) { 0 }, arguments,
+            (pm_location_t) { 0 }, (pm_location_t) { 0 }, NULL);
+        pm_node_list_append(pm->arena, &statements->body, print);
+    }
+
+    if (p->do_loop) {
+        if (p->do_split) {
+            pm_node_list_t split_args = { 0 };
+            pm_node_list_append(pm->arena, &split_args, (pm_node_t *) pm_global_variable_read_node_new(
+                pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, pm_yconst_cstr(p, "$;")));
+            pm_arguments_node_t *split_arguments = pm_arguments_node_new(
+                pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, split_args);
+            pm_node_t *receiver = (pm_node_t *) pm_global_variable_read_node_new(
+                pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, pm_yconst_cstr(p, "$_"));
+            pm_node_t *split = (pm_node_t *) pm_call_node_new(
+                pm->arena, ++pm->node_id, 0,
+                (pm_location_t) { .start = 0, .length = (uint32_t) (pm->end - pm->start) },
+                receiver, (pm_location_t) { 0 }, pm_yconst_cstr(p, "split"),
+                (pm_location_t) { 0 }, (pm_location_t) { 0 }, split_arguments,
+                (pm_location_t) { 0 }, (pm_location_t) { 0 }, NULL);
+            pm_node_t *write = (pm_node_t *) pm_global_variable_write_node_new(
+                pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 },
+                pm_yconst_cstr(p, "$F"), (pm_location_t) { 0 }, split, (pm_location_t) { 0 });
+
+            pm_node_list_t body = { 0 };
+            pm_node_list_append(pm->arena, &body, write);
+            for (size_t i = 0; i < statements->body.size; i++) {
+                pm_node_list_append(pm->arena, &body, statements->body.nodes[i]);
+            }
+            statements->body = body;
+        }
+
+        pm_node_list_t gets_args = { 0 };
+        pm_node_list_append(pm->arena, &gets_args, (pm_node_t *) pm_global_variable_read_node_new(
+            pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, pm_yconst_cstr(p, "$/")));
+
+        pm_node_flags_t arguments_flags = 0;
+        if (p->do_chomp) {
+            pm_string_t chomp_name;
+            pm_string_constant_init(&chomp_name, "chomp", 5);
+            pm_node_t *key = (pm_node_t *) pm_symbol_node_new(
+                pm->arena, ++pm->node_id,
+                PM_NODE_FLAG_STATIC_LITERAL | PM_SYMBOL_FLAGS_FORCED_US_ASCII_ENCODING,
+                (pm_location_t) { 0 }, (pm_location_t) { 0 }, (pm_location_t) { 0 },
+                (pm_location_t) { 0 }, chomp_name);
+            pm_node_t *value = (pm_node_t *) pm_true_node_new(
+                pm->arena, ++pm->node_id, PM_NODE_FLAG_STATIC_LITERAL, (pm_location_t) { 0 });
+            pm_node_t *assoc = (pm_node_t *) pm_assoc_node_new(
+                pm->arena, ++pm->node_id, PM_NODE_FLAG_STATIC_LITERAL, (pm_location_t) { 0 },
+                key, value, (pm_location_t) { 0 });
+
+            pm_node_list_t assocs = { 0 };
+            pm_node_list_append(pm->arena, &assocs, assoc);
+            pm_node_t *keywords = (pm_node_t *) pm_keyword_hash_node_new(
+                pm->arena, ++pm->node_id, PM_KEYWORD_HASH_NODE_FLAGS_SYMBOL_KEYS,
+                (pm_location_t) { 0 }, assocs);
+
+            pm_node_list_append(pm->arena, &gets_args, keywords);
+            arguments_flags |= PM_ARGUMENTS_NODE_FLAGS_CONTAINS_KEYWORDS;
+        }
+
+        pm_arguments_node_t *gets_arguments = pm_arguments_node_new(
+            pm->arena, ++pm->node_id, arguments_flags, (pm_location_t) { 0 }, gets_args);
+        pm_node_t *gets = (pm_node_t *) pm_call_node_new(
+            pm->arena, ++pm->node_id, PM_CALL_NODE_FLAGS_IGNORE_VISIBILITY, (pm_location_t) { 0 },
+            NULL, (pm_location_t) { 0 }, pm_yconst_cstr(p, "gets"),
+            (pm_location_t) { 0 }, (pm_location_t) { 0 }, gets_arguments,
+            (pm_location_t) { 0 }, (pm_location_t) { 0 }, NULL);
+
+        pm_node_t *loop = (pm_node_t *) pm_while_node_new(
+            pm->arena, ++pm->node_id, PM_NODE_FLAG_NEWLINE, (pm_location_t) { 0 },
+            (pm_location_t) { 0 }, (pm_location_t) { 0 }, (pm_location_t) { 0 },
+            gets, statements);
+
+        pm_node_list_t wrapped = { 0 };
+        pm_node_list_append(pm->arena, &wrapped, loop);
+        statements = pm_statements_node_new(
+            pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, wrapped);
+    }
+
+    return (NODE *) statements;
 }
 
 static void
@@ -17741,6 +17941,8 @@ pm_yparse_program(struct parser_params *p, pm_node_t *tree)
     pm_parser_t *pm = p->pm;
 
     if (tree != NULL && PM_NODE_TYPE_P(tree, PM_PROGRAM_NODE)) {
+        pm_program_node_t *program = (pm_program_node_t *) tree;
+        program->statements = (pm_statements_node_t *) parser_append_options(p, (NODE *) program->statements);
         return tree;
     }
 
@@ -17751,6 +17953,7 @@ pm_yparse_program(struct parser_params *p, pm_node_t *tree)
     else {
         body = pm_statements_node_new(pm->arena, ++pm->node_id, 0, (pm_location_t) { 0 }, (pm_node_list_t) { 0 });
     }
+    body = (pm_statements_node_t *) parser_append_options(p, (NODE *) body);
 
     pm_constant_id_list_t locals = { 0 };
     return (pm_node_t *) pm_program_node_new(pm->arena, ++pm->node_id, 0, body->base.location, locals, body);
@@ -17781,10 +17984,12 @@ pm_yparse(pm_parser_t *pm)
     p->enc = pm->encoding;
     p->exits = 0;
 
-    /* yycompile, minus the source file bookkeeping prism already did. */
+    /* yycompile, minus the source file bookkeeping prism already did.
+     * pm_parser_init already skipped the BOM and, under -x or a foreign
+     * shebang, advanced to the "#!...ruby" line; lexing starts there. */
     p->ruby_sourceline = 0;
     p->lvtbl = NULL;
-    p->lex.gets_cursor = (const char *) pm->start;
+    p->lex.gets_cursor = (const char *) pm->current.end;
 
     p->do_print = (pm->command_line & PM_OPTIONS_COMMAND_LINE_P) != 0;
     p->do_loop = (pm->command_line & (PM_OPTIONS_COMMAND_LINE_P | PM_OPTIONS_COMMAND_LINE_N)) != 0;
@@ -17910,7 +18115,19 @@ rb_parser_set_location(struct parser_params *p, YYLTYPE *yylloc)
 static NODE *
 pm_ymissing_operand(struct parser_params *p, const YYLTYPE *op_loc, const YYLTYPE *error_loc)
 {
+    bool at_eof = p->ylast_syntax_diag != NULL &&
+        strcmp(p->ylast_unexpected, "end-of-input") == 0;
+
     pm_yerror_replace_last(p, PM_ERR_EXPECT_EXPRESSION_AFTER_OPERATOR);
+
+    /* the hand parser's EOF recovery also assumes the context is closing */
+    if (at_eof) {
+        pm_diagnostic_list_append_format(
+            &p->pm->metadata_arena, &p->pm->error_list,
+            error_loc->beg, 0, PM_ERR_UNEXPECTED_TOKEN_CLOSE_CONTEXT,
+            "end-of-input", "top level context");
+    }
+
     YYLTYPE loc = (error_loc->end > error_loc->beg) ? *error_loc : *op_loc;
     return NEW_ERROR(&loc);
 }
