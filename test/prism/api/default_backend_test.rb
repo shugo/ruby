@@ -43,6 +43,8 @@ module Prism
 
     def test_wins_over_environment_variable
       return unless parsey_available?
+      # JRuby cannot mutate the process environment the C library reads.
+      return if RUBY_ENGINE == "jruby"
 
       saved = ENV["PRISM_PARSER_BACKEND"]
       ENV["PRISM_PARSER_BACKEND"] = "parse_y"
@@ -57,6 +59,8 @@ module Prism
 
     def test_nil_restores_environment_default
       return unless parsey_available?
+      # JRuby cannot mutate the process environment the C library reads.
+      return if RUBY_ENGINE == "jruby"
 
       saved = ENV["PRISM_PARSER_BACKEND"]
       ENV["PRISM_PARSER_BACKEND"] = "parse_y"

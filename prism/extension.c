@@ -287,22 +287,49 @@ bool rb_ruby_prism_parsey_p(void);
 #endif
 
 /**
+ * The mirror of Prism.default_backend for the parse paths: 0 unset, 1 prism,
+ * 2 parse_y. Kept out of the module's instance variables so that parses in
+ * non-main Ractors (which cannot read those on Ruby < 3.2) still see it.
+ */
+static volatile signed char prism_default_backend_native = 0;
+
+/**
+ * call-seq: Prism::__set_default_backend_native(backend) -> Symbol | nil
+ *
+ * Internal: called by Prism::default_backend= (which validates its input)
+ * to mirror the chosen default where the C parse paths read it. :nodoc:
+ */
+static VALUE
+set_default_backend_native(VALUE self, VALUE backend) {
+    if (NIL_P(backend)) {
+        prism_default_backend_native = 0;
+    } else if (rb_to_id(backend) == rb_intern("parse_y")) {
+        prism_default_backend_native = 2;
+    } else {
+        prism_default_backend_native = 1;
+    }
+    return backend;
+}
+
+/**
  * Extract the options from the given keyword arguments.
  */
 static void
 extract_options(pm_options_t *options, VALUE filepath, VALUE keywords) {
     pm_options_line_set(options, 1); /* default */
 
-    VALUE default_backend = rb_attr_get(rb_cPrism, rb_id_default_backend);
-    if (!NIL_P(default_backend)) {
+    if (prism_default_backend_native != 0) {
         /*
          * Prism.default_backend overrides both the interpreter's selection
          * below and the PRISM_PARSER_BACKEND environment variable read in
          * pm_parser_init; the explicit backend keyword still wins when the
-         * given options are applied.
+         * given options are applied. The value lives in a C global mirrored
+         * by the Ruby setter rather than in the module instance variable,
+         * because reading class-level instance variables from a non-main
+         * Ractor raises on Ruby < 3.2.
          */
-        VALUE name = rb_sym2str(default_backend);
-        pm_options_backend_set(options, RSTRING_PTR(name), RSTRING_LEN(name));
+        const char *name = prism_default_backend_native == 2 ? "parse_y" : "prism";
+        pm_options_backend_set(options, name, strlen(name));
     }
 #ifdef PRISM_PARSEY_INTERPRETER_DEFAULT
     else if (rb_ruby_prism_parsey_p()) {
@@ -1546,6 +1573,7 @@ Init_prism(void) {
     // Intern all of the IDs eagerly that we support so that we don't have to do
     // it every time we parse.
     rb_id_default_backend = rb_intern_const("@default_backend");
+    rb_define_singleton_method(rb_cPrism, "__set_default_backend_native", set_default_backend_native, 1);
     rb_id_option_backend = rb_intern_const("backend");
     rb_id_option_command_line = rb_intern_const("command_line");
     rb_id_option_encoding = rb_intern_const("encoding");

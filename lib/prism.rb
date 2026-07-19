@@ -104,6 +104,9 @@ module Prism
   #--
   #: () -> Symbol?
   def self.default_backend
+    # Class-level instance variables cannot be read from non-main Ractors on
+    # Ruby < 3.2; parses there follow the interpreter/environment default.
+    return nil if defined?(Ractor) && Ractor.current != Ractor.main
     @default_backend
   end
 
@@ -128,6 +131,9 @@ module Prism
     else
       raise ArgumentError, "invalid backend: #{backend.inspect}"
     end
+    # The C extension reads the default from a Ractor-safe mirror.
+    __set_default_backend_native(backend) if respond_to?(:__set_default_backend_native)
+    backend
   end
 
   # @rbs!
