@@ -4678,7 +4678,7 @@ AS_IF([test x"$enable_rubygems" = xno], [
 ])
 AC_SUBST(USE_RUBYGEMS)
 
-m4_define(available_parsers, [parse.y, prism])
+m4_define(available_parsers, [parse.y, prism, prism/parse.y])
 AC_ARG_WITH(parser,
     AS_HELP_STRING([--with-parser=PARSER],
         [specify default parser; PARSER is one of ]m4_join([, ],available_parsers)),
@@ -4688,6 +4688,23 @@ m4_foreach(parser, [available_parsers],
     parser[,][AC_DEFINE_UNQUOTED(RB_DEFAULT_PARSER, RB_DEFAULT_PARSER_[]AS_TR_CPP(parser)),])
     [AC_MSG_ERROR([Unknown parser: $with_parser])]
 )
+
+# The parse.y backend of prism (the parser generated from the fork of
+# CRuby's parse.y) adds ~300KB of objects for trees identical to the
+# hand-written parser's, so it is an opt-in part of the build.
+AC_ARG_ENABLE(prism-parsey,
+    AS_HELP_STRING([--enable-prism-parsey],
+        [build the parse.y backend of prism, selectable with --parser=prism/parse.y]),
+    [], [AS_IF([test "x$with_parser" = "xprism/parse.y"], [enable_prism_parsey=yes], [enable_prism_parsey=no])])
+AS_IF([test "x$enable_prism_parsey" = "xyes"], [
+    PRISM_PARSEY_OBJS='prism/parsey/parse.$(OBJEXT) prism/parsey/yid.$(OBJEXT) prism/parsey/ystring.$(OBJEXT)'
+], [
+    AS_IF([test "x$with_parser" = "xprism/parse.y"],
+        [AC_MSG_ERROR([--with-parser=prism/parse.y requires --enable-prism-parsey])])
+    PRISM_PARSEY_OBJS=
+    RUBY_APPEND_OPTIONS(XCFLAGS, -DPRISM_EXCLUDE_PARSEY)
+])
+AC_SUBST(PRISM_PARSEY_OBJS)
 
 # Use the ruby allocator for prism. See prism/defines.h
 RUBY_APPEND_OPTIONS(XCFLAGS, -DPRISM_XALLOCATOR)

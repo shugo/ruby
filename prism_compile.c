@@ -11547,6 +11547,19 @@ error_generic:
 }
 
 /**
+ * Request the parse.y backend when it is the interpreter-wide parser. Left
+ * unset otherwise, so that prism falls back to the PRISM_PARSER_BACKEND
+ * environment variable and then to the hand-written parser.
+ */
+static void
+pm_options_backend_for_current_ruby_set(pm_options_t *options)
+{
+    if (rb_ruby_default_parser() == RB_DEFAULT_PARSER_PRISM_PARSE_Y) {
+        pm_options_backend_set(options, "parse_y", rb_strlen_lit("parse_y"));
+    }
+}
+
+/**
  * Parse the given filepath and store the resulting scope node in the given
  * parse result struct. It returns a Ruby error if the file cannot be read or
  * if it cannot be parsed properly. It is assumed that the parse result object
@@ -11560,6 +11573,7 @@ pm_parse_file(pm_parse_result_t *result, VALUE filepath, VALUE *script_lines)
     RB_GC_GUARD(filepath);
 
     pm_options_version_for_current_ruby_set(result->options);
+    pm_options_backend_for_current_ruby_set(result->options);
 
     result->parser = pm_parser_new(result->arena, pm_source_source(result->source), pm_source_length(result->source), result->options);
     pm_node_t *node = pm_parse(result->parser);
@@ -11619,6 +11633,7 @@ pm_parse_string(pm_parse_result_t *result, VALUE source, VALUE filepath, VALUE *
     pm_options_filepath_set(result->options, RSTRING_PTR(filepath));
 
     pm_options_version_for_current_ruby_set(result->options);
+    pm_options_backend_for_current_ruby_set(result->options);
 
     result->parser = pm_parser_new(result->arena, pm_source_source(result->source), pm_source_length(result->source), result->options);
     pm_node_t *node = pm_parse(result->parser);
@@ -11709,6 +11724,7 @@ VALUE
 pm_parse_stdin(pm_parse_result_t *result)
 {
     pm_options_frozen_string_literal_init(result->options);
+    pm_options_backend_for_current_ruby_set(result->options);
 
     result->source = pm_source_stream_new((void *) rb_stdin, pm_parse_stdin_fgets, pm_parse_stdin_eof);
     pm_node_t *node = pm_parse_stream(&result->parser, result->arena, result->source, result->options);

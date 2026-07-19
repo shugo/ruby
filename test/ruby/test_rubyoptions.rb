@@ -275,9 +275,58 @@ class TestRubyOptions < Test::Unit::TestCase
     assert_in_out_err(%w(--parser=parse.y -e) + ["puts :hi"], "", %w(hi), [])
     assert_norun_with_rflag('--parser=parse.y', '--version', "")
 
+    require "prism"
+    if Prism.backends.include?(:parse_y)
+      assert_in_out_err(%w(--parser=prism/parse.y -e) + ["puts :hi"], "", %w(hi), [])
+      assert_in_out_err(%w(--parser=prism/parse.y --dump=parsetree -e _=:hi), "", /"hi"/, [])
+      assert_in_out_err(%w(--parser=prism/parse.y --version), "", %r[\+PRISM/parse\.y], [])
+    else
+      assert_in_out_err(%w(--parser=prism/parse.y -e) + ["puts :hi"], "", [], /parse\.y backend of prism is not built in/)
+    end
+
     assert_in_out_err(%w(--parser=notreal -e) + ["puts :hi"], "", [], /unknown parser notreal/)
 
     assert_in_out_err(%w(--parser=prism --version), "", /\+PRISM/, [])
+  end
+
+  def test_parser_flag_prism_parse_y_backend
+    omit if ENV["RUBYOPT"]&.include?("--parser=")
+    require "prism"
+    omit "the parse.y backend is not built in" unless Prism.backends.include?(:parse_y)
+
+    # The parse.y backend assigns node ids in LALR reduce order, the
+    # hand-written parser in visit order, so a backend-unset Prism.parse must
+    # follow --parser for node_id_for_backtrace_location consumers such as
+    # error_highlight.
+    probe = <<~'RUBY'
+      require "prism"
+      ids = ->(r) { out = []; walk = ->(n) { out << n.node_id; n.child_nodes.compact.each(&walk) }; walk.(r.value); out }
+      default = ids.(Prism.parse("a; b"))
+      puts default == ids.(Prism.parse("a; b", backend: :parse_y)) &&
+        default != ids.(Prism.parse("a; b", backend: :prism))
+    RUBY
+    assert_in_out_err(%w(--parser=prism/parse.y -e) + [probe], "", %w(true), [])
+
+    # Compile-time node ids must be found again by a backend-unset re-parse of
+    # the same file (the error_highlight path).
+    Tempfile.create(%w"parsey_probe .rb") do |script|
+      script.puts <<~'RUBY'
+        def boom = raise("x")
+        begin
+          boom
+        rescue => e
+          loc = e.backtrace_locations.find { |l| l.label.include?("boom") }
+          node_id = RubyVM::AbstractSyntaxTree.node_id_for_backtrace_location(loc)
+          require "prism"
+          found = nil
+          walk = ->(n) { found = n if n.node_id == node_id; n.child_nodes.compact.each(&walk) }
+          walk.(Prism.parse_file(__FILE__).value)
+          puts found.type
+        end
+      RUBY
+      script.close
+      assert_in_out_err(["--parser=prism/parse.y", script.path], "", %w(call_node), [])
+    end
   end
 
   def test_eval

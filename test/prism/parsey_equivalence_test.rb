@@ -29,7 +29,7 @@ module Prism
       define_method(:"test_#{relative}") do
         source = File.read(path)
 
-        hand = Prism.parse(source)
+        hand = Prism.parse(source, backend: :prism)
         parsey = Prism.parse(source, backend: :parse_y)
 
         equivalent =
@@ -85,7 +85,7 @@ module Prism
 
     SCOPE_CASES.each_with_index do |(source, scopes), index|
       define_method(:"test_scopes_#{index}_#{source.gsub(/\W+/, "_")}") do
-        hand = Prism.parse(source, scopes: scopes)
+        hand = Prism.parse(source, scopes: scopes, backend: :prism)
         parsey = Prism.parse(source, scopes: scopes, backend: :parse_y)
 
         if hand.errors.any?

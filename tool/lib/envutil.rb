@@ -288,7 +288,14 @@ module EnvUtil
 
   def current_parser
     features = RUBY_DESCRIPTION[%r{\)\K [-+*/%._0-9a-zA-Z\[\] ]*(?=\[[-+*/%._0-9a-zA-Z]+\]\z)}]
-    features&.split&.include?("+PRISM") ? "prism" : "parse.y"
+    features = features&.split || []
+    if features.include?("+PRISM/parse.y")
+      "prism/parse.y"
+    elsif features.include?("+PRISM")
+      "prism"
+    else
+      "parse.y"
+    end
   end
   module_function :current_parser
 

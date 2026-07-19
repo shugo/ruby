@@ -109,6 +109,7 @@ LIBPRISM_OBJS = \
 		prism/node.$(OBJEXT) \
 		prism/options.$(OBJEXT) \
 		prism/parser.$(OBJEXT) \
+		$(PRISM_PARSEY_OBJS) \
 		prism/prettyprint.$(OBJEXT) \
 		prism/prism.$(OBJEXT) \
 		prism/regexp.$(OBJEXT) \
@@ -220,9 +221,9 @@ COMMONOBJS    = \
 		$(BUILTIN_TRANSOBJS) \
 		$(MISSING)
 
-$(PRISM_OBJS): $(PRISM_BUILD_DIR)/.time $(PRISM_BUILD_DIR)/util/.time
+$(PRISM_OBJS): $(PRISM_BUILD_DIR)/.time $(PRISM_BUILD_DIR)/util/.time $(PRISM_BUILD_DIR)/parsey/.time
 
-$(PRISM_BUILD_DIR)/.time $(PRISM_BUILD_DIR)/util/.time:
+$(PRISM_BUILD_DIR)/.time $(PRISM_BUILD_DIR)/util/.time $(PRISM_BUILD_DIR)/parsey/.time:
 	$(Q) $(MAKEDIRS) $(@D)
 	@$(NULLCMD) > $@
 
@@ -1059,6 +1060,11 @@ PHONY:
 	$(ECHO) generating $@
 	$(Q)$(BASERUBY) $(tooldir)/id2token.rb $(SRC_FILE) | \
 	$(LRAMA) $(YFLAGS) -o$@ -H$*.h - parse.y
+
+# prism/parsey/parse.c is imported pre-generated from the prism repository
+# (rake parsey:generate there); keep the .y.c rule away from it.
+$(PRISM_SRCDIR)/parsey/parse.c:
+	@$(NULLCMD)
 
 $(PLATFORM_D):
 	$(Q) $(MAKEDIRS) $(PLATFORM_DIR) $(@D)

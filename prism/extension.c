@@ -277,9 +277,28 @@ build_options(VALUE argument) {
 /**
  * Extract the options from the given keyword arguments.
  */
+#ifdef PRISM_XALLOCATOR
+/*
+ * ruby/ruby-local: defined in version.c. True when --parser=prism/parse.y
+ * selected the parse.y backend interpreter-wide.
+ */
+bool rb_ruby_prism_parsey_p(void);
+#endif
+
 static void
 extract_options(pm_options_t *options, VALUE filepath, VALUE keywords) {
     pm_options_line_set(options, 1); /* default */
+
+#ifdef PRISM_XALLOCATOR
+    /*
+     * ruby/ruby-local: default to the backend selected interpreter-wide by
+     * --parser, so that re-parses observe the node ids of compiled code
+     * (e.g. error_highlight). An explicit backend keyword overrides this.
+     */
+    if (rb_ruby_prism_parsey_p()) {
+        pm_options_backend_set(options, "parse_y", 7);
+    }
+#endif
 
     if (!NIL_P(keywords)) {
         struct build_options_data data = { .options = options, .keywords = keywords };

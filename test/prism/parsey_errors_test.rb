@@ -38,7 +38,7 @@ module Prism
         source = raw.lines.grep_v(/^\s*\^/).join.gsub(/\n*\z/, "")
         version = TestCase.ruby_versions_for(relative).last
 
-        hand = Prism.parse(source, version: version)
+        hand = Prism.parse(source, version: version, backend: :prism)
         parsey = Prism.parse(source, version: version, backend: :parse_y)
 
         if VALIDITY_EXCLUDES.include?(relative)
