@@ -95,6 +95,41 @@ module Prism
     NodeFind.find(callable, rubyvm)
   end
 
+  # :call-seq:
+  #   Prism::default_backend -> Symbol | nil
+  #
+  # The backend used by parses that are not given an explicit +backend+
+  # option, or nil (the default) when it is chosen by the host interpreter's
+  # own parser selection or the PRISM_PARSER_BACKEND environment variable.
+  #--
+  #: () -> Symbol?
+  def self.default_backend
+    @default_backend
+  end
+
+  # :call-seq:
+  #   Prism::default_backend = Symbol | nil
+  #
+  # Set the backend used by parses that are not given an explicit +backend+
+  # option, overriding both the host interpreter's parser selection and the
+  # PRISM_PARSER_BACKEND environment variable. Accepts the symbols returned
+  # by Prism::backends, or nil to restore those defaults.
+  #--
+  #: (Symbol? backend) -> Symbol?
+  def self.default_backend=(backend)
+    case backend
+    when nil, :prism
+      @default_backend = backend
+    when :parse_y
+      unless backends.include?(:parse_y)
+        raise ArgumentError, "the parse.y backend is not included in this build of prism"
+      end
+      @default_backend = backend
+    else
+      raise ArgumentError, "invalid backend: #{backend.inspect}"
+    end
+  end
+
   # @rbs!
   #    VERSION: String
   #    BACKEND: :CEXT | :FFI

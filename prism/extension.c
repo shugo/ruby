@@ -31,6 +31,7 @@ VALUE rb_cPrismCurrentVersionError;
 
 VALUE rb_cPrismDebugEncoding;
 
+ID rb_id_default_backend;
 ID rb_id_option_backend;
 ID rb_id_option_command_line;
 ID rb_id_option_encoding;
@@ -292,13 +293,24 @@ static void
 extract_options(pm_options_t *options, VALUE filepath, VALUE keywords) {
     pm_options_line_set(options, 1); /* default */
 
+    VALUE default_backend = rb_attr_get(rb_cPrism, rb_id_default_backend);
+    if (!NIL_P(default_backend)) {
+        /*
+         * Prism.default_backend overrides both the interpreter's selection
+         * below and the PRISM_PARSER_BACKEND environment variable read in
+         * pm_parser_init; the explicit backend keyword still wins when the
+         * given options are applied.
+         */
+        VALUE name = rb_sym2str(default_backend);
+        pm_options_backend_set(options, RSTRING_PTR(name), RSTRING_LEN(name));
+    }
 #ifdef PRISM_PARSEY_INTERPRETER_DEFAULT
-    /*
-     * Default to the backend the host interpreter selected (--parser), so
-     * that re-parses observe the node ids of compiled code (e.g.
-     * error_highlight). An explicit backend keyword overrides this.
-     */
-    if (rb_ruby_prism_parsey_p()) {
+    else if (rb_ruby_prism_parsey_p()) {
+        /*
+         * Default to the backend the host interpreter selected (--parser),
+         * so that re-parses observe the node ids of compiled code (e.g.
+         * error_highlight). An explicit backend keyword overrides this.
+         */
         pm_options_backend_set(options, "parse_y", 7);
     }
 #endif
@@ -1533,6 +1545,7 @@ Init_prism(void) {
 
     // Intern all of the IDs eagerly that we support so that we don't have to do
     // it every time we parse.
+    rb_id_default_backend = rb_intern_const("@default_backend");
     rb_id_option_backend = rb_intern_const("backend");
     rb_id_option_command_line = rb_intern_const("command_line");
     rb_id_option_encoding = rb_intern_const("encoding");

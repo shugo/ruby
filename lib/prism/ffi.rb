@@ -564,7 +564,7 @@ module Prism # :nodoc:
       values << (options.fetch(:freeze, false) ? 1 : 0)
 
       template << "C"
-      values << dump_options_backend(options[:backend])
+      values << dump_options_backend(options[:backend] || Prism.default_backend)
 
       template << "L"
       if (scopes = options[:scopes])

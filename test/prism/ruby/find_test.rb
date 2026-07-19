@@ -11,6 +11,28 @@ module Prism
     Fixtures = FindFixtures
     FIXTURES_PATH = File.expand_path("find_fixtures.rb", __dir__)
 
+    # Prism.find re-parses source and matches nodes by the node ids the
+    # interpreter assigned at compile time, so backend-unset parses here must
+    # resolve to the backend the interpreter itself compiles with -- not the
+    # suite-wide hand-parser pin. The interpreter may honor
+    # PRISM_PARSER_BACKEND (ruby/ruby with the parse.y backend) or ignore it
+    # (a host ruby with upstream prism), so probe its behavior: the backends
+    # reject this snippet with different messages.
+    if defined?(RubyVM::InstructionSequence)
+      INTERPRETER_BACKEND =
+        begin
+          RubyVM::InstructionSequence.compile("a=>")
+          nil
+        rescue SyntaxError => error
+          error.message.include?("expected a pattern expression") ? :prism : :parse_y
+        end
+
+      def setup
+        super
+        Prism.default_backend = INTERPRETER_BACKEND
+      end
+    end
+
     # === Method / UnboundMethod tests ===
 
     def test_simple_method

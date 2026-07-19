@@ -14,6 +14,7 @@ module Prism
       regexp_test.rb
       test_helper.rb
       unescape_test.rb
+      api/default_backend_test.rb
       api/parse_stream_test.rb
       encoding/regular_expression_encoding_test.rb
       encoding/string_encoding_test.rb
