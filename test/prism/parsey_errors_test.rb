@@ -6,7 +6,17 @@ require_relative "test_helper"
 
 # The whole file verifies the parse.y backend against the hand-written
 # parser, so a build without it has nothing to test.
-return unless Prism.backends.include?(:parse_y)
+# Prism.backends might also be absent entirely: the gem install test runs
+# this suite against whatever prism gem is installed, including older ones.
+return unless Prism.respond_to?(:backends) && Prism.backends.include?(:parse_y)
+
+# These files verify the repository's own build of the backend against the
+# hand-written parser. When the suite runs against an installed gem (the gem
+# packaging tests), that is not what is being tested; skip.
+if defined?(Gem) && (spec = Gem.loaded_specs["prism"])
+  repository = File.expand_path("../..", __dir__)
+  return unless File.identical?(spec.full_gem_path, repository)
+end
 
 module Prism
   # Compares errors between the hand-written parser and the parse.y backend
