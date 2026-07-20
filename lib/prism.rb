@@ -142,6 +142,8 @@ module Prism
   #
   #    def self.backends: () -> Array[Symbol]
   #
+  #    def self.__set_default_backend_native: (Symbol? backend) -> void
+  #
   #    interface _Stream
   #      def gets: (?Integer integer) -> (String | nil)
   #    end
