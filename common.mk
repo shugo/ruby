@@ -94,7 +94,7 @@ MAKE_ENC      = -f $(ENC_MK) V="$(V)" UNICODE_HDR_DIR="$(UNICODE_HDR_DIR)" \
 
 PRISM_BUILD_DIR = prism
 
-LIBPRISM_OBJS = \
+LIBPRISM_CORE_OBJS = \
 		prism/arena.$(OBJEXT) \
 		prism/buffer.$(OBJEXT) \
 		prism/char.$(OBJEXT) \
@@ -109,7 +109,6 @@ LIBPRISM_OBJS = \
 		prism/node.$(OBJEXT) \
 		prism/options.$(OBJEXT) \
 		prism/parser.$(OBJEXT) \
-		$(PRISM_PARSEY_OBJS) \
 		prism/prettyprint.$(OBJEXT) \
 		prism/prism.$(OBJEXT) \
 		prism/regexp.$(OBJEXT) \
@@ -121,6 +120,11 @@ LIBPRISM_OBJS = \
 		prism/strncasecmp.$(OBJEXT) \
 		prism/strpbrk.$(OBJEXT) \
 		prism/tokens.$(OBJEXT)
+
+# build-tool/Makefile compiles its own copies of these with BASERUBY's flags,
+# so it takes the core objects and excludes the opt-in parse.y backend rather
+# than reproducing the build's choice of it.
+LIBPRISM_OBJS = $(LIBPRISM_CORE_OBJS) $(PRISM_PARSEY_OBJS)
 
 EXTPRISM_OBJS = prism/api_node.$(OBJEXT) \
 		prism/extension.$(OBJEXT) \
@@ -1076,6 +1080,13 @@ $(PRISM_BUILD_DIR)/parsey/parse.c: $(PRISM_SRCDIR)/parsey/parse.y $(PRISM_SRCDIR
 
 $(PRISM_BUILD_DIR)/parsey/parse.h: $(PRISM_BUILD_DIR)/parsey/parse.c
 
+# The generated parser is compiled out of the build directory, so the grammar's
+# own headers are not next to it.  Their directory has to precede the other
+# include paths: id.h there is the parser's, not the one generated for CRuby.
+$(PRISM_BUILD_DIR)/parsey/parse.$(OBJEXT): $(PRISM_BUILD_DIR)/parsey/parse.c
+	$(ECHO) compiling $(PRISM_BUILD_DIR)/parsey/parse.c
+	$(Q) $(CC) $(CFLAGS) -I$(PRISM_SRCDIR)/parsey $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(PRISM_BUILD_DIR)/parsey/parse.c
+
 $(PLATFORM_D):
 	$(Q) $(MAKEDIRS) $(PLATFORM_DIR) $(@D)
 	@$(NULLCMD) > $@
@@ -1362,7 +1373,7 @@ dump_ast$(BUILD_EXEEXT): $(tooldir)/dump_ast.c $(LIBPRISM_OBJS)
 	$(Q) $(CC) $(CFLAGS) $(OUTFLAG)$@ $(INCFLAGS) $(tooldir)/dump_ast.c $(LIBPRISM_OBJS)
 
 build-tool/Makefile: $(tooldir)/dump_ast.mkmf.rb prism-srcs prism-incs
-	+$(BASERUBY) -s $(tooldir)/dump_ast.mkmf.rb "-INCFLAGS=$(INCFLAGS)" "-make=$(MAKE)" build-tool $(tooldir)/dump_ast.c dump_ast.$(OBJEXT) $(LIBPRISM_OBJS)
+	+$(BASERUBY) -s $(tooldir)/dump_ast.mkmf.rb "-INCFLAGS=$(INCFLAGS)" "-CPPDEFS=-DPRISM_EXCLUDE_PARSEY" "-make=$(MAKE)" build-tool $(tooldir)/dump_ast.c dump_ast.$(OBJEXT) $(LIBPRISM_CORE_OBJS)
 
 build-tool/dump_ast$(BUILD_EXEEXT): build-tool/Makefile
 	cd build-tool && MAKEFLAGS= MFLAGS= && unset MAKEFLAGS MFLAGS && $(MAKE)
