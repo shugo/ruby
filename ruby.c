@@ -369,7 +369,11 @@ usage(const char *name, int help, int highlight, int columns)
         M("--external-encoding=encoding", "",            "Set default external encoding."),
         M("--help",                       "",            "Print long help message; use -h for short message."),
         M("--internal-encoding=encoding", "",            "Set default internal encoding."),
+#ifdef PRISM_EXCLUDE_PARSEY
         M("--parser=parser",              "",            "Set Ruby parser: parse.y or prism."),
+#else
+        M("--parser=parser",              "",            "Set Ruby parser: parse.y, prism, or prism/parse.y."),
+#endif
         M("--verbose",                    "",            "Set $VERBOSE to true; ignore input from $stdin."),
         M("--version",                    "",            "Print Ruby version."),
         M("-y",                           ", --yydebug", "Print parser log; backward compatibility not guaranteed."),
@@ -1467,6 +1471,14 @@ proc_long_options(ruby_cmdline_options_t *opt, const char *s, long argc, char **
     else if (is_option_with_arg("parser", Qfalse, Qtrue)) {
         if (strcmp("prism", s) == 0) {
             rb_ruby_default_parser_set(RB_DEFAULT_PARSER_PRISM);
+        }
+        else if (strcmp("prism/parse.y", s) == 0) {
+#ifdef PRISM_EXCLUDE_PARSEY
+            rb_raise(rb_eRuntimeError, "the parse.y backend of prism is not built in"
+                     " (configure --enable-prism-parsey)");
+#else
+            rb_ruby_default_parser_set(RB_DEFAULT_PARSER_PRISM_PARSE_Y);
+#endif
         }
         else if (strcmp("parse.y", s) == 0) {
             rb_ruby_default_parser_set(RB_DEFAULT_PARSER_PARSE_Y);

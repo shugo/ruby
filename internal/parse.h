@@ -16,12 +16,15 @@
 typedef enum {
     RB_DEFAULT_PARSER_PARSE_Y,
     RB_DEFAULT_PARSER_PRISM,
+    // prism with its parser generated from the fork of parse.y
+    RB_DEFAULT_PARSER_PRISM_PARSE_Y,
 } ruby_default_parser_enum;
 
 ruby_default_parser_enum rb_ruby_default_parser(void);
 void rb_ruby_default_parser_set(ruby_default_parser_enum parser);
+bool rb_ruby_prism_parsey_p(void);
 
-#define rb_ruby_prism_p() (rb_ruby_default_parser() == RB_DEFAULT_PARSER_PRISM)
+#define rb_ruby_prism_p() (rb_ruby_default_parser() != RB_DEFAULT_PARSER_PARSE_Y)
 
 #ifdef UNIVERSAL_PARSER
 #define rb_encoding const void

@@ -243,6 +243,26 @@ pm_options_freeze_set(pm_options_t *options, bool freeze) {
     options->freeze = freeze;
 }
 
+/**
+ * Set the backend option on the given options struct by parsing the given
+ * string. If the string does not name a backend, this returns false. Otherwise,
+ * it returns true.
+ */
+bool
+pm_options_backend_set(pm_options_t *options, const char *backend, size_t length) {
+    if (length == 5 && strncmp(backend, "prism", length) == 0) {
+        options->backend = PM_OPTIONS_BACKEND_HANDWRITTEN;
+        return true;
+    }
+
+    if (length == 7 && strncmp(backend, "parse_y", length) == 0) {
+        options->backend = PM_OPTIONS_BACKEND_PARSE_Y;
+        return true;
+    }
+
+    return false;
+}
+
 // For some reason, GCC analyzer thinks we're leaking allocated scopes and
 // locals here, even though we definitely aren't. This is a false positive.
 // Ideally we wouldn't need to suppress this.
@@ -387,6 +407,7 @@ pm_options_read(pm_options_t *options, const char *data) {
     options->main_script = ((uint8_t) *data++) > 0;
     options->partial_script = ((uint8_t) *data++) > 0;
     options->freeze = ((uint8_t) *data++) > 0;
+    options->backend = (pm_options_backend_t) *data++;
 
     uint32_t scopes_count = pm_options_read_u32(data);
     data += 4;

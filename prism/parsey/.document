@@ -1,0 +1,5 @@
+# The parse.y backend's sources; the vendored generator inputs under defs/
+# and tool/ are build machinery, not documentation targets.
+*.c
+*.h
+*.y

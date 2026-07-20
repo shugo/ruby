@@ -13,7 +13,9 @@ link = MakeMakefile::TRY_LINK.sub(MakeMakefile::CONFTEST+$EXEEXT, '$(@)')
 prismdir= "$(srcdir)/#{dirs.first}"
 $VPATH = ["$(srcdir)", "$(srcdir)/#{tooldir.basename}", prismdir, tooldir]
 $INCFLAGS << " -I#{prismdir}"
-$CPPFLAGS = $CFLAGS = $INCFLAGS
+# -CPPDEFS carries the defines libprism must be built with, e.g.
+# -DPRISM_EXCLUDE_PARSEY when the build leaves out the parse.y backend.
+$CPPFLAGS = $CFLAGS = "#{$INCFLAGS} #{$CPPDEFS}"
 
 include FileUtils::Verbose
 mkpath(workdir)

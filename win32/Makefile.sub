@@ -164,6 +164,15 @@ XCFLAGS = $(XCFLAGS) -DRUBY_DEVEL=1
 !if "$(modular_gc_dir)" != ""
 XCFLAGS = $(XCFLAGS) -Dmodular_gc_dir="$(modular_gc_dir)"
 !endif
+# The parse.y backend of prism is opt-in; see --enable-prism-parsey in
+# configure.ac.  Build with USE_PRISM_PARSEY=1 to include it.
+XCFLAGS = $(XCFLAGS) -DPRISM_PARSEY_INTERPRETER_DEFAULT
+!if "$(USE_PRISM_PARSEY)" == "1"
+PRISM_PARSEY_OBJS = prism/parsey/parse.$(OBJEXT) prism/parsey/yid.$(OBJEXT) prism/parsey/ystring.$(OBJEXT)
+!else
+PRISM_PARSEY_OBJS =
+XCFLAGS = $(XCFLAGS) -DPRISM_EXCLUDE_PARSEY
+!endif
 !if !defined(OPTFLAGS)
 OPTFLAGS = -O2sy-
 !endif
@@ -1311,6 +1320,9 @@ modular-gc-precheck:
 	$(ECHO) compiling $(<:\=/)
 	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(CSRCFLAG)$(<:\=/)
 {$(srcdir)/prism/util}.c.obj:
+	$(ECHO) compiling $(<:\=/)
+	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(CSRCFLAG)$(<:\=/)
+{$(srcdir)/prism/parsey}.c.obj:
 	$(ECHO) compiling $(<:\=/)
 	$(Q) $(CC) $(CFLAGS) $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(CSRCFLAG)$(<:\=/)
 {$(srcdir)/enc/trans}.c.obj:

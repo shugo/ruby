@@ -95,31 +95,76 @@ module Prism
     NodeFind.find(callable, rubyvm)
   end
 
+  # :call-seq:
+  #   Prism::default_backend -> Symbol | nil
+  #
+  # The backend used by parses that are not given an explicit +backend+
+  # option, or nil (the default) when it is chosen by the host interpreter's
+  # own parser selection or the PRISM_PARSER_BACKEND environment variable.
+  #--
+  #: () -> Symbol?
+  def self.default_backend
+    # Class-level instance variables cannot be read from non-main Ractors on
+    # Ruby < 3.2; parses there follow the interpreter/environment default.
+    return nil if defined?(Ractor) && Ractor.current != Ractor.main
+    @default_backend
+  end
+
+  # :call-seq:
+  #   Prism::default_backend = Symbol | nil
+  #
+  # Set the backend used by parses that are not given an explicit +backend+
+  # option, overriding both the host interpreter's parser selection and the
+  # PRISM_PARSER_BACKEND environment variable. Accepts the symbols returned
+  # by Prism::backends, or nil to restore those defaults.
+  #--
+  #: (Symbol? backend) -> Symbol?
+  def self.default_backend=(backend)
+    case backend
+    when nil, :prism
+      @default_backend = backend
+    when :parse_y
+      unless backends.include?(:parse_y)
+        raise ArgumentError, "the parse.y backend is not included in this build of prism"
+      end
+      @default_backend = backend
+    else
+      raise ArgumentError, "invalid backend: #{backend.inspect}"
+    end
+    # The C extension reads the default from a Ractor-safe mirror.
+    __set_default_backend_native(backend) if respond_to?(:__set_default_backend_native)
+    backend
+  end
+
   # @rbs!
   #    VERSION: String
   #    BACKEND: :CEXT | :FFI
+  #
+  #    def self.backends: () -> Array[Symbol]
+  #
+  #    def self.__set_default_backend_native: (Symbol? backend) -> void
   #
   #    interface _Stream
   #      def gets: (?Integer integer) -> (String | nil)
   #    end
   #
-  #    def self.parse:               (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
-  #    def self.profile:             (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> void
-  #    def self.lex:                 (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> LexResult
-  #    def self.parse_lex:           (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseLexResult
-  #    def self.dump:                (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> String
-  #    def self.parse_comments:      (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> Array[Comment]
-  #    def self.parse_success?:      (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
-  #    def self.parse_failure?:      (String source,  ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
-  #    def self.parse_stream:        (_Stream stream, ?filepath: String, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
-  #    def self.parse_file:          (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
-  #    def self.profile_file:        (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> void
-  #    def self.lex_file:            (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> LexResult
-  #    def self.parse_lex_file:      (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseLexResult
-  #    def self.dump_file:           (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> String
-  #    def self.parse_file_comments: (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> Array[Comment]
-  #    def self.parse_file_success?: (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
-  #    def self.parse_file_failure?: (String filepath,                   ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
+  #    def self.parse:               (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
+  #    def self.profile:             (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> void
+  #    def self.lex:                 (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> LexResult
+  #    def self.parse_lex:           (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseLexResult
+  #    def self.dump:                (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> String
+  #    def self.parse_comments:      (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> Array[Comment]
+  #    def self.parse_success?:      (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
+  #    def self.parse_failure?:      (String source,  ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
+  #    def self.parse_stream:        (_Stream stream, ?filepath: String, ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
+  #    def self.parse_file:          (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseResult
+  #    def self.profile_file:        (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> void
+  #    def self.lex_file:            (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> LexResult
+  #    def self.parse_lex_file:      (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> ParseLexResult
+  #    def self.dump_file:           (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> String
+  #    def self.parse_file_comments: (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> Array[Comment]
+  #    def self.parse_file_success?: (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
+  #    def self.parse_file_failure?: (String filepath,                   ?backend: Symbol, ?command_line: String, ?encoding: Encoding | false, ?freeze: bool, ?frozen_string_literal: bool, ?line: Integer, ?main_script: bool, ?partial_script: bool, ?scopes: Array[Array[Symbol]], ?version: String) -> bool
 end
 
 require_relative "prism/polyfill/byteindex"
@@ -136,7 +181,30 @@ if RUBY_ENGINE == "ruby" and !ENV["PRISM_FFI_BACKEND"]
   # The C extension is the default backend on CRuby.
   Prism::BACKEND = :CEXT
 
-  require "prism/prism"
+  begin
+    # The precompiled native libraries are in <gem_dir>/lib/prism/<ruby_version>
+    require_relative "prism/#{RUBY_VERSION[/\d+\.\d+/]}/prism"
+  rescue LoadError => e
+    if e.message.include?("GLIBC")
+      warn(<<~EOM)
+
+        ERROR: It looks like you're trying to use Prism as a precompiled native gem on a system
+               with an unsupported version of glibc.
+
+          #{e.message}
+
+          If that's the case, then please install Prism via the `ruby` platform gem:
+              gem install prism --platform=ruby
+          or, in your Gemfile:
+              gem "prism", force_ruby_platform: true
+
+      EOM
+      raise e
+    end
+
+    # Precompiled library isn't available, fall back to the library compiled at installation time.
+    require "prism/prism"
+  end
 else
   # The FFI backend is used on other Ruby implementations.
   Prism::BACKEND = :FFI

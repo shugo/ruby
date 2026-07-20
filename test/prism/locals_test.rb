@@ -41,12 +41,14 @@ module Prism
     end
 
     def setup
+      super
       @previous_default_external = Encoding.default_external
       ignore_warnings { Encoding.default_external = Encoding::UTF_8 }
     end
 
     def teardown
       ignore_warnings { Encoding.default_external = @previous_default_external }
+      super
     end
 
     private

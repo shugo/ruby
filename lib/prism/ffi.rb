@@ -105,6 +105,12 @@ module Prism # :nodoc:
     )
 
     load_exported_functions_from(
+      "prism/options.h",
+      "pm_parsey_enabled",
+      []
+    )
+
+    load_exported_functions_from(
       "prism/serialize.h",
       "pm_serialize_parse",
       "pm_serialize_parse_stream",
@@ -256,6 +262,15 @@ module Prism # :nodoc:
   VERSION = LibRubyParser.pm_version.read_string.freeze
 
   class << self
+    # Return the parser implementations compiled into this build of prism, as
+    # symbols accepted by the `backend` option: always `:prism`, plus
+    # `:parse_y` when the parse.y backend is included.
+    def backends
+      backends = [:prism]
+      backends << :parse_y if LibRubyParser.pm_parsey_enabled
+      backends
+    end
+
     # Mirror the Prism.dump API by using the serialization API.
     def dump(source, **options)
       LibRubyParser::PrismSource.with_string(source) { |string| dump_common(string, options) }
@@ -455,6 +470,18 @@ module Prism # :nodoc:
       end
     end
 
+    # Return the value that should be dumped for the backend option.
+    def dump_options_backend(backend)
+      case backend
+      when nil then 0 # Handled in pm_parser_init
+      when :prism then 1
+      when :parse_y
+        raise ArgumentError, "the parse.y backend is not included in this build of prism" unless Prism.backends.include?(:parse_y)
+        2
+      else raise ArgumentError, "invalid backend: #{backend}"
+      end
+    end
+
     # Return the value that should be dumped for the version option.
     def dump_options_version(version)
       case version
@@ -535,6 +562,9 @@ module Prism # :nodoc:
 
       template << "C"
       values << (options.fetch(:freeze, false) ? 1 : 0)
+
+      template << "C"
+      values << dump_options_backend(options[:backend] || Prism.default_backend)
 
       template << "L"
       if (scopes = options[:scopes])

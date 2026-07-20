@@ -30,6 +30,23 @@ module Prism
   end
 
   class TestCase < ::Test::Unit::TestCase
+    # Most of this suite asserts the hand-written parser's exact behavior, so
+    # a backend-unset parse must not drift with the host interpreter's
+    # --parser choice or the PRISM_PARSER_BACKEND environment variable.
+    # Scoped to each test so nothing leaks into other suites sharing the
+    # process (e.g. ruby/ruby's test-all workers). The parsey_* files pass
+    # their backends explicitly and are unaffected.
+    def setup
+      super
+      @saved_default_backend = Prism.default_backend
+      Prism.default_backend = :prism
+    end
+
+    def teardown
+      Prism.default_backend = @saved_default_backend
+      super
+    end
+
     # We have a set of fixtures that we use to test various aspects of the
     # parser. They are all represented as .txt files under the
     # test/prism/fixtures directory. Typically in test files you will find calls

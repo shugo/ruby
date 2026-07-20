@@ -276,6 +276,10 @@ lcov*.info
 /prism/serialize.c
 /prism/tokens.c
 /prism/srcs.mk
+/prism/parsey/parse.c
+/prism/parsey/parse.c.i
+/prism/parsey/parse.h
+!/prism/parsey/lex.inc
 /dump_ast
 
 # prism (old file)
