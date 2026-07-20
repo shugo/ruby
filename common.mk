@@ -51,7 +51,9 @@ GIT_LOG_FORMAT = $(GIT_LOG) "--pretty=format:"
 # GITPULLOPTIONS = --no-tags
 
 PRISM_SRCDIR = $(srcdir)/prism
-INCFLAGS = -I. -I$(arch_hdrdir) -I$(ext_hdrdir) -I$(hdrdir) -I$(srcdir) -I$(PRISM_SRCDIR) -I$(UNICODE_HDR_DIR) $(incflags)
+# The parse.y backend's headers are included by the parser generated next to
+# them or in the build directory, so they are reachable from neither place.
+INCFLAGS = -I. -I$(arch_hdrdir) -I$(ext_hdrdir) -I$(hdrdir) -I$(srcdir) -I$(PRISM_SRCDIR) -I$(PRISM_SRCDIR)/parsey -I$(UNICODE_HDR_DIR) $(incflags)
 
 GEM_HOME =
 GEM_PATH =
@@ -1079,13 +1081,6 @@ $(PRISM_BUILD_DIR)/parsey/parse.c: $(PRISM_SRCDIR)/parsey/parse.y $(PRISM_SRCDIR
 	$(Q)$(RM) $@.i
 
 $(PRISM_BUILD_DIR)/parsey/parse.h: $(PRISM_BUILD_DIR)/parsey/parse.c
-
-# The generated parser is compiled out of the build directory, so the grammar's
-# own headers are not next to it.  Their directory has to precede the other
-# include paths: id.h there is the parser's, not the one generated for CRuby.
-$(PRISM_BUILD_DIR)/parsey/parse.$(OBJEXT): $(PRISM_BUILD_DIR)/parsey/parse.c
-	$(ECHO) compiling $(PRISM_BUILD_DIR)/parsey/parse.c
-	$(Q) $(CC) $(CFLAGS) -I$(PRISM_SRCDIR)/parsey $(XCFLAGS) $(CPPFLAGS) $(COUTFLAG)$@ -c $(PRISM_BUILD_DIR)/parsey/parse.c
 
 $(PLATFORM_D):
 	$(Q) $(MAKEDIRS) $(PLATFORM_DIR) $(@D)
