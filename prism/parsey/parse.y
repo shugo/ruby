@@ -13042,10 +13042,14 @@ rb_node_when_new(struct parser_params *p, NODE *nd_head, NODE *nd_body, NODE *nd
         pm_node_list_append(p->pm->arena, &conditions, nd_head);
     }
 
-    /* string conditions deduplicate at compile time, so they freeze */
+    /* string conditions deduplicate at compile time, so they freeze; __FILE__
+     * is dispatched on as a literal there as well, but is not frozen */
     for (size_t i = 0; i < conditions.size; i++) {
         if (PM_NODE_TYPE_P(conditions.nodes[i], PM_STRING_NODE)) {
             conditions.nodes[i]->flags |= PM_STRING_FLAGS_FROZEN | PM_NODE_FLAG_STATIC_LITERAL;
+        }
+        else if (PM_NODE_TYPE_P(conditions.nodes[i], PM_SOURCE_FILE_NODE)) {
+            conditions.nodes[i]->flags |= PM_NODE_FLAG_STATIC_LITERAL;
         }
     }
 
