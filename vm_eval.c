@@ -448,19 +448,12 @@ scope_to_ci(call_type scope, ID mid, int argc, struct rb_callinfo *ci)
     *ci = VM_CI_ON_STACK(mid, flags, argc, NULL);
 }
 
+/* Returns the cached call cache, or NULL with *index_ptr set for the slow path. */
 static inline const struct rb_callcache *
-gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, const struct rb_callinfo *ci)
+gccct_lookup(rb_vm_t *vm, VALUE klass, ID mid, unsigned int *index_ptr)
 {
-    VALUE klass, box_value;
+    VALUE box_value;
     const rb_box_t *box = rb_current_box();
-
-    if (!SPECIAL_CONST_P(recv)) {
-        klass = RBASIC_CLASS(recv);
-        if (UNLIKELY(!klass)) uncallable_object(recv, mid);
-    }
-    else {
-        klass = CLASS_OF(recv);
-    }
 
     if (BOX_USER_P(box)) {
         box_value = box->box_object;
@@ -470,7 +463,6 @@ gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, const struct
     }
     // search global method cache
     unsigned int index = (unsigned int)(gccct_hash(klass, box_value, mid) % VM_GLOBAL_CC_CACHE_TABLE_SIZE);
-    rb_vm_t *vm = rb_ec_vm_ptr(ec);
     const struct rb_callcache *cc = vm->global_cc_cache_table[index];
 
     if (LIKELY(cc)) {
@@ -491,7 +483,73 @@ gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, const struct
     }
 
     RB_DEBUG_COUNTER_INC(gccct_miss);
+    *index_ptr = index;
+    return NULL;
+}
+
+static inline const struct rb_callcache *
+gccct_method_search(rb_execution_context_t *ec, VALUE recv, ID mid, const struct rb_callinfo *ci)
+{
+    VALUE klass;
+
+    if (!SPECIAL_CONST_P(recv)) {
+        klass = RBASIC_CLASS(recv);
+        if (UNLIKELY(!klass)) uncallable_object(recv, mid);
+    }
+    else {
+        klass = CLASS_OF(recv);
+    }
+
+    rb_vm_t *vm = rb_ec_vm_ptr(ec);
+    unsigned int index;
+    const struct rb_callcache *cc = gccct_lookup(vm, klass, mid, &index);
+    if (LIKELY(cc)) return cc;
     return gccct_method_search_slowpath(vm, klass, index, ci);
+}
+
+NOINLINE(static const rb_callable_method_entry_t *
+         gccct_callable_method_entry_slowpath(rb_vm_t *vm, VALUE klass, ID mid, unsigned int index,
+                                              VALUE *defined_class_ptr));
+
+/* callable_method_entry() through the global call cache cache, which also
+ * remembers undefined methods. */
+static inline const rb_callable_method_entry_t *
+gccct_callable_method_entry(VALUE klass, ID mid, VALUE *defined_class_ptr)
+{
+    /* gccct may hold an entry of another box, e.g. while requiring a file
+     * in the root box; see also rb_autoload_load(). */
+    if (UNLIKELY(rb_box_available())) {
+        return callable_method_entry(klass, mid, defined_class_ptr);
+    }
+
+    rb_vm_t *vm = GET_VM();
+    unsigned int index;
+    const struct rb_callcache *cc = gccct_lookup(vm, klass, mid, &index);
+    if (UNLIKELY(!cc)) {
+        return gccct_callable_method_entry_slowpath(vm, klass, mid, index, defined_class_ptr);
+    }
+
+    const rb_callable_method_entry_t *cme = vm_cc_cme(cc);
+    if (UNLIKELY(METHOD_ENTRY_OVERLOADED(cme))) {
+        return callable_method_entry(klass, mid, defined_class_ptr);
+    }
+    if (defined_class_ptr) *defined_class_ptr = cme->defined_class;
+    return UNDEFINED_METHOD_ENTRY_P(cme) ? NULL : cme;
+}
+
+static const rb_callable_method_entry_t *
+gccct_callable_method_entry_slowpath(rb_vm_t *vm, VALUE klass, ID mid, unsigned int index,
+                                     VALUE *defined_class_ptr)
+{
+    const struct rb_callcache *cc =
+        gccct_method_search_slowpath(vm, klass, index, &VM_CI_ON_STACK(mid, 0, 0, NULL));
+    const rb_callable_method_entry_t *cme = vm_cc_cme(cc);
+
+    if (!cme || METHOD_ENTRY_OVERLOADED(cme)) {
+        return callable_method_entry(klass, mid, defined_class_ptr);
+    }
+    if (defined_class_ptr) *defined_class_ptr = cme->defined_class;
+    return UNDEFINED_METHOD_ENTRY_P(cme) ? NULL : cme;
 }
 
 VALUE
@@ -649,7 +707,7 @@ check_funcall_missing(rb_execution_context_t *ec, VALUE klass, VALUE recv, ID mi
     args.respond = respond > 0;
     args.respond_to_missing = !UNDEF_P(ret);
     ret = def;
-    cme = callable_method_entry(klass, idMethodMissing, &args.defined_class);
+    cme = gccct_callable_method_entry(klass, idMethodMissing, &args.defined_class);
 
     if (cme && !METHOD_ENTRY_BASIC(cme)) {
         VALUE argbuf, *new_args = ALLOCV_N(VALUE, argbuf, argc+1);
@@ -706,7 +764,8 @@ rb_check_funcall_default_kw(VALUE recv, ID mid, int argc, const VALUE *argv, VAL
     if (!respond)
         return def;
 
-    me = rb_search_method_entry(recv, mid);
+    if (!klass) uncallable_object(recv, mid);
+    me = gccct_callable_method_entry(klass, mid, NULL);
     if (!check_funcall_callable(ec, me)) {
         VALUE ret = check_funcall_missing(ec, klass, recv, mid, argc, argv,
                                           respond, def, kw_splat);
@@ -737,7 +796,8 @@ rb_check_funcall_with_hook_kw(VALUE recv, ID mid, int argc, const VALUE *argv,
         return Qundef;
     }
 
-    me = rb_search_method_entry(recv, mid);
+    if (!klass) uncallable_object(recv, mid);
+    me = gccct_callable_method_entry(klass, mid, NULL);
     if (!check_funcall_callable(ec, me)) {
         VALUE ret = check_funcall_missing(ec, klass, recv, mid, argc, argv,
                                           respond, Qundef, kw_splat);

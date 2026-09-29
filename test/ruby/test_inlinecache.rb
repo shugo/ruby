@@ -238,4 +238,47 @@ class TestMethodInlineCache < Test::Unit::TestCase
       assert_equal [:defined] * 3, call_foo(obj)
     RUBY
   end
+
+  def test_respond_to_after_definition
+    c = Class.new
+    obj = c.new
+
+    2.times { assert_not_respond_to obj, :foo }
+    c.class_eval { def foo = nil }
+    assert_respond_to obj, :foo
+    c.class_eval { undef_method :foo }
+    assert_not_respond_to obj, :foo
+
+    2.times { assert_not_respond_to obj, :bar }
+    c.class_eval { def respond_to_missing?(name, priv) = name == :bar }
+    assert_respond_to obj, :bar
+    c.class_eval { def respond_to?(name, priv = false) = name == :baz }
+    assert_respond_to obj, :baz
+    assert_not_respond_to obj, :bar
+  end
+
+  def test_implicit_conversion_after_definition
+    c = Class.new
+    obj = c.new
+
+    2.times { assert_equal [obj], [obj].flatten }
+    c.class_eval { def to_ary = [:to_ary] }
+    assert_equal [:to_ary], [obj].flatten
+    c.class_eval { remove_method :to_ary }
+    assert_equal [obj], [obj].flatten
+
+    c.class_eval do
+      def respond_to_missing?(name, priv) = name == :to_ary
+      def method_missing(name, *) = name == :to_ary ? [:missing] : super
+    end
+    assert_equal [:missing], [obj].flatten
+  end
+
+  def test_respond_to_mandatory_only_method
+    ary = [1, 2]
+    assert_equal 1, ary.first
+    assert_respond_to ary, :first
+    assert_equal [1], ary.first(1)
+    assert_equal [1, 2], Array(ary)
+  end
 end

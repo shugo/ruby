@@ -1704,6 +1704,7 @@ get_overloaded_cme(const rb_callable_method_entry_t *cme)
         st_insert(overloaded_cme_table(), (st_data_t)cme, (st_data_t)me);
 
         METHOD_ENTRY_VISI_SET(me, METHOD_ENTRY_VISI(cme));
+        METHOD_ENTRY_OVERLOADED_SET(me);
         return (rb_callable_method_entry_t *)me;
     }
 }
@@ -2422,6 +2423,8 @@ rb_export_method(VALUE klass, ID name, rb_method_visibility_t visi)
 #define BOUND_PRIVATE  0x01
 #define BOUND_RESPONDS 0x02
 
+static const rb_callable_method_entry_t *gccct_callable_method_entry(VALUE klass, ID mid, VALUE *defined_class_ptr); // vm_eval.c
+
 static int
 method_boundp(VALUE klass, ID id, int ex)
 {
@@ -2430,7 +2433,8 @@ method_boundp(VALUE klass, ID id, int ex)
     VM_ASSERT_TYPE2(klass, T_CLASS, T_ICLASS);
 
     if (ex & BOUND_RESPONDS) {
-        cme = rb_callable_method_entry_with_refinements(klass, id, NULL);
+        cme = callable_method_entry_refinements0(klass, id, NULL, true,
+                                                 gccct_callable_method_entry(klass, id, NULL));
     }
     else {
         cme = callable_method_entry_without_refinements(klass, id, NULL);
@@ -3585,7 +3589,7 @@ basic_obj_respond_to_missing(rb_execution_context_t *ec, VALUE klass, VALUE obj,
 {
     VALUE defined_class, args[2];
     const ID rtmid = idRespond_to_missing;
-    const rb_callable_method_entry_t *const cme = callable_method_entry(klass, rtmid, &defined_class);
+    const rb_callable_method_entry_t *const cme = gccct_callable_method_entry(klass, rtmid, &defined_class);
 
     if (!cme || METHOD_ENTRY_BASIC(cme)) return Qundef;
     args[0] = mid;
@@ -3616,7 +3620,7 @@ vm_respond_to(rb_execution_context_t *ec, VALUE klass, VALUE obj, ID id, int pri
 {
     VALUE defined_class;
     const ID resid = idRespond_to;
-    const rb_callable_method_entry_t *const cme = callable_method_entry(klass, resid, &defined_class);
+    const rb_callable_method_entry_t *const cme = gccct_callable_method_entry(klass, resid, &defined_class);
 
     if (!cme) return -1;
     if (METHOD_ENTRY_BASIC(cme)) {
