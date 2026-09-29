@@ -107,4 +107,50 @@ class TestMethodInlineCache < Test::Unit::TestCase
 
     assert_equal :C2, d2.new.foo
   end
+
+  def test_undefined_method
+    base = Class.new
+    sub = Class.new(base)
+    obj = sub.new
+    test = -> { obj.foo rescue :undefined }
+
+    2.times { assert_equal :undefined, test[] }
+    base.class_eval { def foo = :base }
+    assert_equal :base, test[]
+    sub.class_eval { undef_method :foo }
+    2.times { assert_equal :undefined, test[] }
+    sub.class_eval { def foo = :sub }
+    assert_equal :sub, test[]
+  end
+
+  def test_undefined_method_defined_by_include_and_singleton
+    c = Class.new
+    obj = c.new
+    test = -> { obj.foo rescue :undefined }
+
+    2.times { assert_equal :undefined, test[] }
+    c.include(Module.new { def foo = :module })
+    assert_equal :module, test[]
+
+    obj2 = Class.new.new
+    test2 = -> { obj2.foo rescue :undefined }
+    2.times { assert_equal :undefined, test2[] }
+    def obj2.foo = :singleton
+    assert_equal :singleton, test2[]
+  end
+
+  def test_undefined_method_with_method_missing
+    c = Class.new do
+      def method_missing(name, *args) = [:missing, name, *args]
+      def respond_to_missing?(*) = true
+    end
+    obj = c.new
+    test = -> { obj.foo(1) }
+
+    2.times { assert_equal [:missing, :foo, 1], test[] }
+    c.class_eval { def foo(x) = [:defined, x] }
+    assert_equal [:defined, 1], test[]
+    c.class_eval { remove_method :foo }
+    assert_equal [:missing, :foo, 1], test[]
+  end
 end
