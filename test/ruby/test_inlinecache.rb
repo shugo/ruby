@@ -153,4 +153,89 @@ class TestMethodInlineCache < Test::Unit::TestCase
     c.class_eval { remove_method :foo }
     assert_equal [:missing, :foo, 1], test[]
   end
+
+  def test_undefined_method_defined_by_prepend_and_extend
+    c = Class.new
+    obj = c.new
+    test = -> { obj.foo rescue :undefined }
+
+    2.times { assert_equal :undefined, test[] }
+    c.prepend(Module.new { def foo = :prepended })
+    assert_equal :prepended, test[]
+
+    obj2 = Class.new.new
+    test2 = -> { obj2.foo rescue :undefined }
+    2.times { assert_equal :undefined, test2[] }
+    obj2.extend(Module.new { def foo = :extended })
+    assert_equal :extended, test2[]
+  end
+
+  def test_undefined_method_defined_in_module_included_later
+    m1 = Module.new
+    m2 = Module.new { def foo = :m2 }
+    c = Class.new { include m1 }
+    sub = Class.new(c)
+    obj = sub.new
+    test = -> { obj.foo rescue :undefined }
+
+    2.times { assert_equal :undefined, test[] }
+    m1.include(m2)
+    assert_equal :m2, test[]
+
+    m3 = Module.new
+    obj2 = Class.new { include m3 }.new
+    test2 = -> { obj2.bar rescue :undefined }
+    2.times { assert_equal :undefined, test2[] }
+    m3.class_eval { def bar = :m3 }
+    assert_equal :m3, test2[]
+  end
+
+  def test_undefined_method_defined_by_refinement
+    assert_separately([], <<~'RUBY')
+      class C; end
+      module R
+        refine(C) { def bar = :bar }
+      end
+      using R
+      def test = (C.new.foo rescue :undefined)
+      2.times { assert_equal :undefined, test }
+      module R
+        refine(C) { def foo = :refined }
+      end
+      assert_equal :refined, test
+    RUBY
+  end
+
+  def test_undefined_method_in_box
+    assert_separately([{'RUBY_BOX' => '1'}], <<~'RUBY', ignore_stderr: true)
+      test = -> { "x".negative_cache_test rescue :undefined }
+      2.times { assert_equal :undefined, test[] }
+
+      box = Ruby::Box.new
+      assert_equal [:undefined, :undefined, :box], box.eval(<<~'CODE')
+        test = -> { "x".negative_cache_test rescue :undefined }
+        results = [test[], test[]]
+        class String
+          def negative_cache_test = :box
+        end
+        results << test[]
+      CODE
+
+      assert_equal :undefined, test[]
+    RUBY
+  end
+
+  def test_undefined_method_with_ractor
+    assert_separately([], <<~'RUBY', ignore_stderr: true)
+      c = Class.new
+      obj = Ractor.make_shareable(c.new)
+      def call_foo(o) = 3.times.map { o.foo rescue :undefined }
+
+      assert_equal [:undefined] * 3, Ractor.new(obj) { |o| call_foo(o) }.value
+      assert_equal [:undefined] * 3, call_foo(obj)
+      c.class_eval { def foo = :defined }
+      assert_equal [:defined] * 3, Ractor.new(obj) { |o| call_foo(o) }.value
+      assert_equal [:defined] * 3, call_foo(obj)
+    RUBY
+  end
 end
